@@ -57,11 +57,3 @@ python app.py
 * `/Builds`: Stores every version of the apps created.
 * `built_app.py`: The most recent, successful build ready to run.
 * `office.html`: The frontend dashboard (accessible at `http://localhost:5000/office`).
-
----
-
-### I think this would be an easier method:
-
-If you want to make this even more impressive for recruiters, you should add a **GIF or Screenshot** of the terminal or UI in action right under the main title. It shows the "live" aspect of your WebSockets immediately!
-
-Would you like me to write a short **frontend** `office.html` template to match this backend if you don't have one yet?
