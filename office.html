@@ -1,0 +1,1739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Dev Office</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #030711;
+  --surface: rgba(6, 14, 28, 0.93);
+  --surface2: rgba(8, 18, 36, 0.96);
+  --border: rgba(14, 165, 233, 0.15);
+  --border-hi: rgba(14, 165, 233, 0.5);
+  --accent: #0ea5e9;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --purple: #8b5cf6;
+  --text: #ddeeff;
+  --muted: #3d6e8a;
+  --dim: #152535;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Inter', sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  user-select: none;
+}
+
+#canvas-container { position: fixed; inset: 0; }
+
+/* ── HUD ─────────────────────────────────────── */
+#hud {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 16px;
+  background: linear-gradient(180deg, rgba(3,7,17,0.98) 60%, transparent 100%);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+}
+
+#hud-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+}
+
+#hud-icon {
+  width: 30px; height: 30px;
+  background: linear-gradient(135deg, #0369a1, #7c3aed);
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  box-shadow: 0 0 14px rgba(14,165,233,0.3);
+}
+
+#hud-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+/* ── Build Pipeline ──────────────────────────── */
+#pipeline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#pipeline-inner {
+  display: flex;
+  align-items: center;
+}
+
+.pipe-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+}
+
+.pipe-dot {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px;
+  transition: all 0.4s ease;
+  position: relative;
+}
+
+.pipe-dot.idle   { border-color: rgba(255,255,255,0.07); color: rgba(255,255,255,0.15); }
+.pipe-dot.working {
+  border-color: var(--warning);
+  background: rgba(245,158,11,0.12);
+  color: var(--warning);
+  box-shadow: 0 0 12px rgba(245,158,11,0.4);
+  animation: pipePulse 0.9s ease-in-out infinite;
+}
+.pipe-dot.done  { border-color: var(--success); background: rgba(16,185,129,0.1); color: var(--success); }
+.pipe-dot.error { border-color: var(--error); background: rgba(239,68,68,0.1); color: var(--error); }
+
+@keyframes pipePulse {
+  0%,100% { transform: scale(1); box-shadow: 0 0 12px rgba(245,158,11,0.4); }
+  50% { transform: scale(1.12); box-shadow: 0 0 20px rgba(245,158,11,0.65); }
+}
+
+.pipe-label {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--dim);
+  transition: color 0.3s;
+}
+.pipe-node.working .pipe-label { color: var(--warning); }
+.pipe-node.done    .pipe-label { color: var(--success); }
+.pipe-node.error   .pipe-label { color: var(--error); }
+
+.pipe-connector {
+  width: 28px; height: 1px;
+  background: rgba(255,255,255,0.05);
+  margin-bottom: 15px;
+  transition: background 0.4s;
+  flex-shrink: 0;
+}
+.pipe-connector.lit  { background: rgba(245,158,11,0.4); }
+.pipe-connector.done { background: rgba(16,185,129,0.35); }
+
+/* ── HUD Status badge ────────────────────────── */
+#hud-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(6,14,28,0.7);
+  min-width: 140px;
+  justify-content: center;
+  transition: all 0.3s;
+}
+.s-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+#hud-status.building { color: var(--warning); border-color: rgba(245,158,11,0.3); }
+#hud-status.building .s-dot { background: var(--warning); animation: blink 0.7s infinite; }
+#hud-status.done     { color: var(--success); border-color: rgba(16,185,129,0.3); }
+#hud-status.done     .s-dot { background: var(--success); }
+#hud-status.error    { color: var(--error); border-color: rgba(239,68,68,0.3); }
+#hud-status.error    .s-dot { background: var(--error); }
+
+@keyframes blink { 0%,100%{opacity:1}50%{opacity:0.25} }
+
+/* ── Agent Cards ─────────────────────────────── */
+#agent-panels {
+  position: fixed;
+  right: 14px;
+  top: 64px;
+  width: 234px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 100;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+  padding-right: 1px;
+}
+
+.agent-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  backdrop-filter: blur(14px);
+  transition: border-color 0.35s, box-shadow 0.35s, transform 0.2s;
+}
+.agent-card.working {
+  border-color: rgba(245,158,11,0.45);
+  box-shadow: 0 0 18px rgba(245,158,11,0.1), inset 0 1px 0 rgba(245,158,11,0.08);
+}
+.agent-card.done {
+  border-color: rgba(16,185,129,0.3);
+  box-shadow: 0 0 14px rgba(16,185,129,0.06);
+}
+.agent-card.error {
+  border-color: rgba(239,68,68,0.35);
+}
+.agent-card.celebrate {
+  animation: cardCelebrate 0.55s ease;
+}
+@keyframes cardCelebrate {
+  0%,100% { transform: translateY(0); }
+  25% { transform: translateY(-3px) scale(1.01); }
+  75% { transform: translateY(-1px); }
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.agent-avatar {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.agent-meta { flex: 1; min-width: 0; }
+
+.agent-name {
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: inherit;
+  line-height: 1.1;
+}
+
+.agent-role {
+  font-size: 9.5px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+  margin-top: 1px;
+}
+
+.agent-badge {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+.badge-idle    { color: var(--dim); border-color: var(--dim); }
+.badge-working { color: var(--warning); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.06); }
+.badge-done    { color: var(--success); border-color: rgba(16,185,129,0.35); background: rgba(16,185,129,0.06); }
+.badge-error   { color: var(--error);   border-color: rgba(239,68,68,0.35);  background: rgba(239,68,68,0.06); }
+
+.agent-msg {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.4;
+  min-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.typing-dots {
+  display: none;
+  gap: 3px;
+  align-items: center;
+  margin-top: 4px;
+  height: 10px;
+}
+.agent-card.working .typing-dots { display: flex; }
+.td {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: tdBounce 1.1s infinite;
+}
+.td:nth-child(2) { animation-delay: 0.18s; }
+.td:nth-child(3) { animation-delay: 0.36s; }
+@keyframes tdBounce {
+  0%,60%,100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.agent-prog-wrap {
+  height: 2px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+.agent-prog {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #6366f1);
+  border-radius: 2px;
+  transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+  width: 0%;
+}
+.agent-card.working .agent-prog { background: linear-gradient(90deg, #b45309, var(--warning)); }
+.agent-card.done    .agent-prog { background: linear-gradient(90deg, #065f46, var(--success)); }
+
+#view-out-btn {
+  width: 100%;
+  background: rgba(14,165,233,0.06);
+  border: 1px solid rgba(14,165,233,0.2);
+  color: var(--accent);
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.2s;
+  margin-top: 2px;
+}
+#view-out-btn:hover {
+  background: rgba(14,165,233,0.14);
+  border-color: rgba(14,165,233,0.45);
+  box-shadow: 0 0 18px rgba(14,165,233,0.1);
+}
+
+/* ── Log ─────────────────────────────────────── */
+#log-panel {
+  position: fixed;
+  left: 14px;
+  bottom: 78px;
+  width: 290px;
+  max-height: 185px;
+  z-index: 100;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  flex-shrink: 0;
+}
+
+#log-title {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 2.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+#log-entries {
+  overflow-y: auto;
+  flex: 1;
+  padding: 5px 12px 7px;
+}
+
+.log-entry {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: #1e3f52;
+  line-height: 1.75;
+  display: flex;
+  gap: 7px;
+}
+.log-time { color: #132030; flex-shrink: 0; }
+.log-entry.fresh .log-time { color: #1e5070; }
+.log-entry.fresh .log-msg { color: #5aaac8; }
+
+/* ── Input ───────────────────────────────────── */
+#input-panel {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(660px, calc(100vw - 36px));
+  z-index: 100;
+  display: flex;
+  gap: 9px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 11px 13px;
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02);
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+#input-panel:focus-within {
+  border-color: rgba(14,165,233,0.35);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.45), 0 0 22px rgba(14,165,233,0.07);
+}
+
+#build-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.4px;
+}
+#build-input::placeholder { color: rgba(61,110,138,0.55); }
+
+#build-btn {
+  background: linear-gradient(135deg, #0369a1, #0ea5e9);
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 1.5px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+#build-btn:hover { background: linear-gradient(135deg, #0ea5e9, #38bdf8); box-shadow: 0 0 18px rgba(14,165,233,0.35); }
+#build-btn:disabled { opacity: 0.3; cursor: not-allowed; box-shadow: none; }
+
+/* ── Toasts ──────────────────────────────────── */
+#toasts {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  z-index: 150;
+  pointer-events: none;
+  align-items: center;
+}
+
+.toast {
+  background: rgba(6,14,28,0.97);
+  border: 1px solid;
+  border-radius: 9px;
+  padding: 9px 15px;
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  white-space: nowrap;
+  animation: toastIn 0.35s cubic-bezier(0.34,1.56,0.64,1) forwards;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+}
+.toast.out { animation: toastOut 0.2s ease forwards; }
+.toast.t-working { border-color: rgba(245,158,11,0.35); color: #fcd34d; }
+.toast.t-done    { border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+.toast.t-error   { border-color: rgba(239,68,68,0.35);  color: #fca5a5; }
+.toast.t-complete { border-color: rgba(14,165,233,0.4); color: #7dd3fc; }
+
+@keyframes toastIn  { from { opacity:0; transform: translateY(-10px) scale(0.95); } to { opacity:1; transform:none; } }
+@keyframes toastOut { from { opacity:1; } to { opacity:0; transform: translateY(-8px) scale(0.93); } }
+
+/* ── Speech Bubble ───────────────────────────── */
+#speech-bubble {
+  position: fixed;
+  background: rgba(4,10,22,0.97);
+  border: 1px solid rgba(14,165,233,0.35);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #7dd3fc;
+  max-width: 210px;
+  pointer-events: none;
+  z-index: 90;
+  opacity: 0;
+  transition: opacity 0.18s;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  white-space: pre-line;
+}
+#speech-bubble.visible { opacity: 1; }
+
+/* ── Output Modal ────────────────────────────── */
+#output-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(2,5,14,0.88);
+  z-index: 200;
+  backdrop-filter: blur(6px);
+  align-items: center;
+  justify-content: center;
+}
+#output-modal.open { display: flex; }
+
+#output-box {
+  background: #050e1e;
+  border: 1px solid rgba(14,165,233,0.22);
+  border-radius: 16px;
+  width: min(860px, 92vw);
+  max-height: 82vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.65), 0 0 60px rgba(14,165,233,0.06);
+}
+
+#output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+}
+#output-head h2 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+#close-output {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.09);
+  color: #445;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-family: var(--sans);
+  transition: all 0.2s;
+}
+#close-output:hover { border-color: rgba(239,68,68,0.35); color: var(--error); }
+
+#output-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  padding: 0 20px;
+}
+.out-tab {
+  padding: 9px 16px;
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  margin-bottom: -1px;
+}
+.out-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.out-tab:hover:not(.active) { color: var(--muted); }
+
+#output-body { flex: 1; overflow-y: auto; padding: 20px; }
+.out-pane { display: none; }
+.out-pane.active { display: block; }
+.out-pane pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.8;
+  color: #93c5fd;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(14,165,233,0.18); border-radius: 2px; }
+
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+
+/* ── Terminal Modal ──────────────────────────── */
+#terminal-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(2,5,14,0.88);
+  z-index: 200;
+  backdrop-filter: blur(6px);
+  align-items: center;
+  justify-content: center;
+}
+#terminal-modal.open { display: flex; }
+#terminal-box {
+  background: #050e1e;
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 16px;
+  width: min(820px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.65), 0 0 40px rgba(16,185,129,0.06);
+  overflow: hidden;
+}
+#terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+}
+#terminal-head h2 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--success);
+  text-transform: uppercase;
+}
+#terminal-head-btns { display: flex; gap: 8px; }
+#terminal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: #a3e6c4;
+  background: #020810;
+}
+#terminal-body .t-line { display: block; }
+#terminal-body .t-err  { color: #f87171; }
+#terminal-body .t-dim  { color: #2d5a40; }
+#launch-btn {
+  display: none;
+  width: 100%;
+  background: rgba(16,185,129,0.08);
+  border: 1px solid rgba(16,185,129,0.3);
+  color: var(--success);
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+#launch-btn:hover {
+  background: rgba(16,185,129,0.16);
+  border-color: rgba(16,185,129,0.55);
+  box-shadow: 0 0 18px rgba(16,185,129,0.1);
+}
+#download-btn {
+  display: none;
+  width: 100%;
+  background: rgba(99,102,241,0.07);
+  border: 1px solid rgba(99,102,241,0.25);
+  color: #a5b4fc;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+#download-btn:hover {
+  background: rgba(99,102,241,0.14);
+  border-color: rgba(99,102,241,0.5);
+}
+</style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="hud-logo">
+    <div id="hud-icon">&#9634;</div>
+    <div id="hud-title">AI Dev Office</div>
+  </div>
+
+  <div id="pipeline">
+    <div id="pipeline-inner">
+      <div class="pipe-node idle" id="pn-architect">
+        <div class="pipe-dot idle" id="pd-architect">&#9679;</div>
+        <div class="pipe-label">Architect</div>
+      </div>
+      <div class="pipe-connector" id="pc-0"></div>
+      <div class="pipe-node idle" id="pn-coder">
+        <div class="pipe-dot idle" id="pd-coder">&#9679;</div>
+        <div class="pipe-label">Coder</div>
+      </div>
+      <div class="pipe-connector" id="pc-1"></div>
+      <div class="pipe-node idle" id="pn-debugger">
+        <div class="pipe-dot idle" id="pd-debugger">&#9679;</div>
+        <div class="pipe-label">Debugger</div>
+      </div>
+      <div class="pipe-connector" id="pc-2"></div>
+      <div class="pipe-node idle" id="pn-tester">
+        <div class="pipe-dot idle" id="pd-tester">&#9679;</div>
+        <div class="pipe-label">Tester</div>
+      </div>
+      <div class="pipe-connector" id="pc-3"></div>
+      <div class="pipe-node idle" id="pn-reviewer">
+        <div class="pipe-dot idle" id="pd-reviewer">&#9679;</div>
+        <div class="pipe-label">Reviewer</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="hud-status">
+    <div class="s-dot"></div>
+    <span id="hud-status-text">IDLE</span>
+  </div>
+</div>
+
+<!-- Agent Cards -->
+<div id="agent-panels">
+  <div class="agent-card" id="card-architect">
+    <div class="agent-header">
+      <div class="agent-avatar" style="background:rgba(59,130,246,0.15)">&#129504;</div>
+      <div class="agent-meta">
+        <div class="agent-name" style="color:#60a5fa">Architect</div>
+        <div class="agent-role">Bob &mdash; System Design</div>
+      </div>
+      <div class="agent-badge badge-idle" id="badge-architect">IDLE</div>
+    </div>
+    <div class="agent-msg" id="msg-architect">Waiting for a task...</div>
+    <div class="typing-dots"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+    <div class="agent-prog-wrap"><div class="agent-prog" id="prog-architect"></div></div>
+  </div>
+
+  <div class="agent-card" id="card-coder">
+    <div class="agent-header">
+      <div class="agent-avatar" style="background:rgba(16,185,129,0.12)">&#128187;</div>
+      <div class="agent-meta">
+        <div class="agent-name" style="color:#34d399">Coder</div>
+        <div class="agent-role">Nia &mdash; Implementation</div>
+      </div>
+      <div class="agent-badge badge-idle" id="badge-coder">IDLE</div>
+    </div>
+    <div class="agent-msg" id="msg-coder">Waiting for a task...</div>
+    <div class="typing-dots"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+    <div class="agent-prog-wrap"><div class="agent-prog" id="prog-coder"></div></div>
+  </div>
+
+  <div class="agent-card" id="card-debugger">
+    <div class="agent-header">
+      <div class="agent-avatar" style="background:rgba(239,68,68,0.12)">&#128027;</div>
+      <div class="agent-meta">
+        <div class="agent-name" style="color:#f87171">Debugger</div>
+        <div class="agent-role">Rex &mdash; Bug Fixing</div>
+      </div>
+      <div class="agent-badge badge-idle" id="badge-debugger">IDLE</div>
+    </div>
+    <div class="agent-msg" id="msg-debugger">Waiting for a task...</div>
+    <div class="typing-dots"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+    <div class="agent-prog-wrap"><div class="agent-prog" id="prog-debugger"></div></div>
+  </div>
+
+  <div class="agent-card" id="card-tester">
+    <div class="agent-header">
+      <div class="agent-avatar" style="background:rgba(139,92,246,0.12)">&#129514;</div>
+      <div class="agent-meta">
+        <div class="agent-name" style="color:#a78bfa">Tester</div>
+        <div class="agent-role">Zoe &mdash; QA Engineer</div>
+      </div>
+      <div class="agent-badge badge-idle" id="badge-tester">IDLE</div>
+    </div>
+    <div class="agent-msg" id="msg-tester">Waiting for a task...</div>
+    <div class="typing-dots"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+    <div class="agent-prog-wrap"><div class="agent-prog" id="prog-tester"></div></div>
+  </div>
+
+  <div class="agent-card" id="card-reviewer">
+    <div class="agent-header">
+      <div class="agent-avatar" style="background:rgba(245,158,11,0.12)">&#128269;</div>
+      <div class="agent-meta">
+        <div class="agent-name" style="color:#fbbf24">Reviewer</div>
+        <div class="agent-role">Max &mdash; Code Review</div>
+      </div>
+      <div class="agent-badge badge-idle" id="badge-reviewer">IDLE</div>
+    </div>
+    <div class="agent-msg" id="msg-reviewer">Waiting for a task...</div>
+    <div class="typing-dots"><div class="td"></div><div class="td"></div><div class="td"></div></div>
+    <div class="agent-prog-wrap"><div class="agent-prog" id="prog-reviewer"></div></div>
+  </div>
+
+  <button id="view-out-btn" type="button" onclick="document.getElementById('output-modal').classList.add('open')">
+    View Build Output
+  </button>
+  <button id="launch-btn" type="button" onclick="launchApp()">
+    ▶ Test App
+  </button>
+  <button id="download-btn" type="button" onclick="window.location='http://localhost:5000/download'">
+    ↓ Download built_app.py
+  </button>
+</div>
+
+<!-- Log -->
+<div id="log-panel">
+  <div id="log-head">
+    <div id="log-title">Activity Log</div>
+  </div>
+  <div id="log-entries"></div>
+</div>
+
+<!-- Input -->
+<div id="input-panel">
+  <input id="build-input" type="text" placeholder="What do you want to build? e.g. 'a REST API with auth'" />
+  <button id="build-btn" onclick="startBuild()">Build</button>
+</div>
+
+<!-- Toasts -->
+<div id="toasts"></div>
+
+<!-- Speech Bubble -->
+<div id="speech-bubble"></div>
+
+<!-- Terminal Modal -->
+<div id="terminal-modal">
+  <div id="terminal-box">
+    <div id="terminal-head">
+      <h2>▶ App Terminal — built_app.py</h2>
+      <div id="terminal-head-btns">
+        <button type="button" id="rerun-btn" onclick="launchApp()" style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:var(--success);font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:5px;cursor:pointer;">↺ Re-run</button>
+        <button type="button" onclick="document.getElementById('terminal-modal').classList.remove('open')" style="background:transparent;border:1px solid rgba(255,255,255,0.09);color:#445;cursor:pointer;border-radius:6px;padding:4px 12px;font-size:12px;font-family:var(--sans);">Close</button>
+      </div>
+    </div>
+    <div id="terminal-body"><span class="t-dim">Waiting for output...</span></div>
+  </div>
+</div>
+
+<!-- Output Modal -->
+<div id="output-modal">
+  <div id="output-box">
+    <div id="output-head">
+      <h2>Build Output</h2>
+      <button id="close-output" onclick="document.getElementById('output-modal').classList.remove('open')">Close</button>
+    </div>
+    <div id="output-tabs">
+      <div class="out-tab active" onclick="switchTab('plan')">Plan</div>
+      <div class="out-tab" onclick="switchTab('code')">Code</div>
+      <div class="out-tab" onclick="switchTab('tests')">Tests</div>
+      <div class="out-tab" onclick="switchTab('review')">Review</div>
+    </div>
+    <div id="output-body">
+      <div class="out-pane active" id="pane-plan"><pre id="text-plan">No output yet.</pre></div>
+      <div class="out-pane" id="pane-code"><pre id="text-code">No output yet.</pre></div>
+      <div class="out-pane" id="pane-tests"><pre id="text-tests">No output yet.</pre></div>
+      <div class="out-pane" id="pane-review"><pre id="text-review">No output yet.</pre></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ════════════════════════════════════════════════════
+//  SCENE SETUP
+// ════════════════════════════════════════════════════
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x030711);
+scene.fog = new THREE.FogExp2(0x030711, 0.022);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 300);
+camera.position.set(0, 18, 34);
+camera.lookAt(0, 1, -2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+// ── Lights ─────────────────────────────────────────
+const ambient = new THREE.AmbientLight(0x223355, 2.5);
+scene.add(ambient);
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(15, 30, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.width = 2048;
+sun.shadow.mapSize.height = 2048;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 120;
+sun.shadow.camera.left = -30;
+sun.shadow.camera.right = 30;
+sun.shadow.camera.top = 30;
+sun.shadow.camera.bottom = -30;
+scene.add(sun);
+
+// Rim light from back
+const rimLight = new THREE.DirectionalLight(0x0a2040, 0.6);
+rimLight.position.set(-10, 10, -20);
+scene.add(rimLight);
+
+// ── Toon gradient map (3-step cel shading) ──────────
+const gradientMap = (() => {
+  const tex = new THREE.DataTexture(
+    new Uint8Array([0, 96, 255]), 3, 1, THREE.LuminanceFormat
+  );
+  tex.minFilter = tex.magFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+// ── Floor ───────────────────────────────────────────
+const floorGeo = new THREE.PlaneGeometry(80, 60);
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0x060c1a, roughness: 0.85, metalness: 0.15
+});
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// Grid
+const grid = new THREE.GridHelper(80, 40, 0x0a1828, 0x080e1e);
+scene.add(grid);
+
+// ── Walls ───────────────────────────────────────────
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x07102a, transparent: true, opacity: 0.55,
+  roughness: 0.15, metalness: 0.6
+});
+const wallDefs = [
+  [0, 4, -20, 80, 8, 0.12],
+  [0, 4,  20, 80, 8, 0.12],
+  [-24, 4, 0, 0.12, 8, 60],
+  [ 24, 4, 0, 0.12, 8, 60],
+];
+wallDefs.forEach(([x,y,z,w,h,d]) => {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat);
+  m.position.set(x,y,z);
+  scene.add(m);
+});
+
+// Window panels on walls (glowing)
+const winMat = new THREE.MeshBasicMaterial({ color: 0x0a1f3a, transparent: true, opacity: 0.4 });
+[[-16,4,-19.9],[0,4,-19.9],[16,4,-19.9]].forEach(([x,y,z]) => {
+  const w = new THREE.Mesh(new THREE.PlaneGeometry(5,3.5), winMat);
+  w.position.set(x,y,z);
+  scene.add(w);
+  // Window glow
+  const wl = new THREE.PointLight(0x1a3a6a, 0.4, 12);
+  wl.position.set(x, y, z+1);
+  scene.add(wl);
+});
+
+// ── Ceiling ─────────────────────────────────────────
+const ceiling = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 60),
+  new THREE.MeshStandardMaterial({ color: 0x040a16, roughness: 0.95 })
+);
+ceiling.rotation.x = Math.PI / 2;
+ceiling.position.y = 8;
+scene.add(ceiling);
+
+// ── Ceiling lights ──────────────────────────────────
+function addCeilingLight(x, z) {
+  const fixture = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.05, 1.2),
+    new THREE.MeshBasicMaterial({ color: 0xaaccee })
+  );
+  fixture.position.set(x, 7.92, z);
+  scene.add(fixture);
+  const pl = new THREE.PointLight(0x5588cc, 0.7, 14);
+  pl.position.set(x, 7.6, z);
+  scene.add(pl);
+}
+[-16,-8,0,8,16].forEach(x => [-10,-2,6].forEach(z => addCeilingLight(x, z)));
+
+// ── Agent config ────────────────────────────────────
+const AGENTS = [
+  { id:'architect', name:'Bob', role:'Architect', color:0x3b82f6, hex:'#3b82f6', pos:[-10,0,-10] },
+  { id:'coder',     name:'Nia', role:'Coder',     color:0x10b981, hex:'#10b981', pos:[  0,0,-10] },
+  { id:'debugger',  name:'Rex', role:'Debugger',  color:0xef4444, hex:'#ef4444', pos:[ 10,0,-10] },
+  { id:'tester',    name:'Zoe', role:'Tester',    color:0x8b5cf6, hex:'#8b5cf6', pos:[ -5,0, -2] },
+  { id:'reviewer',  name:'Max', role:'Reviewer',  color:0xf59e0b, hex:'#f59e0b', pos:[  5,0, -2] },
+];
+
+const SKIN_COLORS = [0xffe8c4, 0xffd4a8, 0xf0c090, 0xffcf9e, 0xfde6b8];
+const HAIR_COLORS = [0xff6b8a, 0x4ecdc4, 0xffe066, 0x9b59b6, 0x2ecc71];
+
+const npcRefs = {};
+
+function makeNPC(agent, skinColor, hairColor) {
+  const g = new THREE.Group();
+  // AC toon shading — flat cel-shaded look
+  const shirtMat = new THREE.MeshToonMaterial({ color: agent.color, gradientMap });
+  const skinMat  = new THREE.MeshToonMaterial({ color: skinColor, gradientMap });
+  const hairMat  = new THREE.MeshToonMaterial({ color: hairColor, gradientMap });
+  const darkMat  = new THREE.MeshToonMaterial({ color: 0x1a2a40, gradientMap });
+  const pantsMat = new THREE.MeshToonMaterial({ color: 0x1e2e50, gradientMap });
+
+  // Chair seat
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.09, 0.85), darkMat);
+  seat.position.y = 0.52; seat.castShadow = true; g.add(seat);
+  // Chair back
+  const cback = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.58, 0.07), darkMat);
+  cback.position.set(0, 0.845, -0.395); g.add(cback);
+  // Chair legs
+  [[-0.33,-0.33],[0.33,-0.33],[-0.33,0.33],[0.33,0.33]].forEach(([cx,cz]) => {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,0.52,6), darkMat);
+    leg.position.set(cx, 0.26, cz); g.add(leg);
+  });
+  // Chair armrests
+  [-0.44, 0.44].forEach(cx => {
+    const ar = new THREE.Mesh(new THREE.BoxGeometry(0.055,0.04,0.46), darkMat);
+    ar.position.set(cx, 0.68, 0.04); g.add(ar);
+  });
+
+  // Legs / pants — AC-style stubby
+  [-0.07, 0.07].forEach(lx => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.26, 0.12), pantsMat);
+    leg.position.set(lx, 0.79, 0.1); leg.castShadow = true; g.add(leg);
+  });
+
+  // Torso — short & wide chibi body
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.34, 0.26), shirtMat);
+  torso.position.set(0, 0.96, 0.06); torso.castShadow = true; g.add(torso);
+
+  // No neck — AC characters' big head sits right on the body
+
+  // Head — much larger for AC chibi proportions
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.29, 22, 22), skinMat);
+  head.position.set(0, 1.38, 0.04); head.castShadow = true; g.add(head);
+
+  // Hair — large dome covering top & sides
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.30, 18, 12, 0, Math.PI*2, 0, Math.PI*0.58),
+    hairMat
+  );
+  hair.position.set(0, 1.40, 0.01); hair.rotation.x = 0.10; g.add(hair);
+
+  // AC-style big dot eyes
+  [-0.115, 0.115].forEach(ex => {
+    const eye = new THREE.Mesh(
+      new THREE.SphereGeometry(0.042, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0x111111 })
+    );
+    eye.position.set(ex, 1.395, 0.265); g.add(eye);
+    // Eye shine (two small dots like AC)
+    const shine = new THREE.Mesh(
+      new THREE.SphereGeometry(0.015, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    shine.position.set(ex + 0.013, 1.412, 0.296); g.add(shine);
+    const shine2 = new THREE.Mesh(
+      new THREE.SphereGeometry(0.008, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    shine2.position.set(ex - 0.008, 1.383, 0.298); g.add(shine2);
+  });
+
+  // Nose — small round bump (AC style)
+  const noseMat = new THREE.MeshToonMaterial({ color: skinColor, gradientMap });
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.024, 8, 8), noseMat);
+  nose.position.set(0, 1.355, 0.285); g.add(nose);
+
+  // Rosy cheeks — subtle AC blush
+  const blushMat = new THREE.MeshBasicMaterial({ color: 0xff9999, transparent: true, opacity: 0.35 });
+  [-0.19, 0.19].forEach(bx => {
+    const blush = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), blushMat);
+    blush.position.set(bx, 1.33, 0.25); g.add(blush);
+  });
+
+  // Left arm — short stubby AC arms
+  const lArmG = new THREE.Group();
+  lArmG.position.set(-0.26, 1.08, 0.05);
+  const lUpper = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.20, 8), shirtMat);
+  lUpper.position.set(0,-0.10,0); lUpper.castShadow = true; lArmG.add(lUpper);
+  const lForeG = new THREE.Group();
+  lForeG.position.set(0,-0.20,0);
+  const lFore = new THREE.Mesh(new THREE.CylinderGeometry(0.060, 0.055, 0.16, 8), skinMat);
+  lFore.position.set(0,-0.08,0); lForeG.add(lFore);
+  lArmG.add(lForeG); g.add(lArmG);
+
+  // Right arm — short stubby AC arms
+  const rArmG = new THREE.Group();
+  rArmG.position.set(0.26, 1.08, 0.05);
+  const rUpper = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.20, 8), shirtMat);
+  rUpper.position.set(0,-0.10,0); rUpper.castShadow = true; rArmG.add(rUpper);
+  const rForeG = new THREE.Group();
+  rForeG.position.set(0,-0.20,0);
+  const rFore = new THREE.Mesh(new THREE.CylinderGeometry(0.060, 0.055, 0.16, 8), skinMat);
+  rFore.position.set(0,-0.08,0); rForeG.add(rFore);
+  rArmG.add(rForeG); g.add(rArmG);
+
+  return { group: g, head, lArmG, rArmG, lForeG, rForeG, torso };
+}
+
+function makeDesk(agent) {
+  const g = new THREE.Group();
+  const deskMat = new THREE.MeshStandardMaterial({ color: 0x0c1a30, roughness: 0.6, metalness: 0.3 });
+  const legMat  = new THREE.MeshStandardMaterial({ color: 0x081020, roughness: 0.5, metalness: 0.5 });
+
+  // Desk top
+  const top = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 1.3), deskMat);
+  top.position.y = 0.82; top.castShadow = true; top.receiveShadow = true; g.add(top);
+
+  // Desk legs
+  [[-1.2,0,-0.55],[1.2,0,-0.55],[-1.2,0,0.55],[1.2,0,0.55]].forEach(([lx,ly,lz]) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.82,0.07), legMat);
+    leg.position.set(lx, 0.41, lz); g.add(leg);
+  });
+
+  // Monitor body
+  const monBack = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.95,0.07), legMat);
+  monBack.position.set(0, 1.5, -0.42); g.add(monBack);
+  // Monitor stand
+  const mStand = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.32,0.07), legMat);
+  mStand.position.set(0, 0.98, -0.42); g.add(mStand);
+  // Monitor base
+  const mBase = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.04,0.25), legMat);
+  mBase.position.set(0, 0.82, -0.42); g.add(mBase);
+
+  // Screen glow (faces +Z = toward camera)
+  const screenGeo = new THREE.PlaneGeometry(1.3, 0.78);
+  const screenMat = new THREE.MeshBasicMaterial({
+    color: agent.color, transparent: true, opacity: 0.12, side: THREE.DoubleSide
+  });
+  const screen = new THREE.Mesh(screenGeo, screenMat);
+  screen.position.set(0, 1.5, -0.375);
+  g.add(screen);
+
+  // Keyboard
+  const kb = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.025,0.32), deskMat);
+  kb.position.set(0, 0.875, 0.22); g.add(kb);
+
+  // Coffee cup
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.05,0.12,8), deskMat);
+  cup.position.set(0.9, 0.895, 0.2); g.add(cup);
+  const cupTop = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06,0.06,0.01,8),
+    new THREE.MeshBasicMaterial({ color: 0x3b1f0a })
+  );
+  cupTop.position.set(0.9, 0.96, 0.2); g.add(cupTop);
+
+  return { group: g, screenMat };
+}
+
+// Screen scan line texture
+function makeScanCanvas(color) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,256,256);
+  ctx.font = '10px monospace';
+  const r = (color >> 16) & 0xff;
+  const gv = (color >> 8) & 0xff;
+  const b = color & 0xff;
+  const lines = ['> initializing...','> loading modules...','function build() {','  const data = []','  return pipeline','} // end','> running tests','> compiling...','[OK] success'];
+  for (let i = 0; i < 9; i++) {
+    ctx.fillStyle = `rgba(${r},${gv},${b},${0.3 + Math.random()*0.3})`;
+    ctx.fillText(lines[i], 6, 22 + i * 22);
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+// Name label
+function makeLabel(agent) {
+  const c = document.createElement('canvas');
+  c.width = 320; c.height = 56;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,320,56);
+  ctx.font = 'bold 18px Inter, sans-serif';
+  ctx.fillStyle = agent.hex;
+  ctx.textAlign = 'center';
+  ctx.fillText(`${agent.name} · ${agent.role}`, 160, 24);
+  ctx.font = '13px Inter, sans-serif';
+  ctx.fillStyle = 'rgba(180,210,240,0.5)';
+  ctx.fillText('AI Agent', 160, 46);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.35), mat);
+  return mesh;
+}
+
+const agentStates = {};
+const agentNPCs   = {};
+const agentDesks  = {};
+
+AGENTS.forEach((agent, i) => {
+  agentStates[agent.id] = 'idle';
+  const skin = SKIN_COLORS[i % SKIN_COLORS.length];
+  const hair = HAIR_COLORS[i % HAIR_COLORS.length];
+
+  const npc  = makeNPC(agent, skin, hair);
+  const desk = makeDesk(agent);
+
+  // NPC group: NPC faces +Z (toward camera), positioned behind desk
+  npc.group.position.set(0, 0, 0.58);
+
+  // Desk group
+  // Label above NPC
+  const label = makeLabel(agent);
+  label.position.set(0, 2.98, 0.55);
+  label.rotation.x = -0.15;
+
+  // Glow light above NPC
+  const glow = new THREE.PointLight(agent.color, 0.35, 7);
+  glow.position.set(0, 3.2, 0.5);
+
+  // Master group
+  const master = new THREE.Group();
+  master.add(desk.group);
+  master.add(npc.group);
+  master.add(label);
+  master.add(glow);
+  master.position.set(...agent.pos);
+  scene.add(master);
+
+  // Tag body/head for raycasting
+  npc.head.userData.agentId = agent.id;
+  npc.torso.userData.agentId = agent.id;
+
+  agentNPCs[agent.id]  = { ...npc, glow };
+  agentDesks[agent.id] = desk;
+});
+
+// ── Extra furniture ──────────────────────────────────
+
+// Server rack (back-right)
+function makeServerRack(x, z) {
+  const g = new THREE.Group();
+  const rackMat = new THREE.MeshStandardMaterial({ color: 0x060e1c, roughness: 0.4, metalness: 0.7 });
+  const rack = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.6, 0.7), rackMat);
+  rack.position.y = 1.3; g.add(rack);
+  // Rack units (glowing bars)
+  for (let row = 0; row < 8; row++) {
+    const barMat = new THREE.MeshBasicMaterial({ color: row % 3 === 0 ? 0x00ff88 : 0x0044aa });
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.05), barMat);
+    bar.position.set(0, 0.35 + row * 0.28, 0.35);
+    g.add(bar);
+    const bl = new THREE.PointLight(row % 3 === 0 ? 0x00ff88 : 0x0066ff, 0.15, 2.5);
+    bl.position.copy(bar.position); g.add(bl);
+  }
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+makeServerRack(19, -16);
+
+// Plants (corners)
+function makePlant(x, z) {
+  const g = new THREE.Group();
+  const potMat = new THREE.MeshStandardMaterial({ color: 0x1a0e0a, roughness: 0.9 });
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x0a2a10, roughness: 0.8 });
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.22,0.45,10), potMat);
+  pot.position.y = 0.225; g.add(pot);
+  // Three tiers of foliage
+  [[0.55,0.8,0],[0.42,1.3,0],[0.28,1.7,0]].forEach(([r,y,]) => {
+    const leaf = new THREE.Mesh(new THREE.ConeGeometry(r, 0.55, 10), leafMat);
+    leaf.position.y = y; g.add(leaf);
+  });
+  const pl = new THREE.PointLight(0x0a3010, 0.2, 4);
+  pl.position.set(0, 1, 0); g.add(pl);
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+makePlant(-21, -17); makePlant(21, -17);
+makePlant(-21, 17);  makePlant(21, 17);
+
+// Conference table (left area)
+function makeConfTable(x, z) {
+  const g = new THREE.Group();
+  const tMat = new THREE.MeshStandardMaterial({ color: 0x0c1a2e, roughness: 0.5, metalness: 0.3 });
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.1, 20), tMat);
+  top.position.y = 0.82; g.add(top);
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.82, 8), tMat);
+  leg.position.y = 0.41; g.add(leg);
+  // Chairs around table
+  for (let c = 0; c < 6; c++) {
+    const angle = (c / 6) * Math.PI * 2;
+    const cx = Math.cos(angle) * 2.2;
+    const cz = Math.sin(angle) * 2.2;
+    const cs = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.08,0.6), tMat);
+    cs.position.set(cx, 0.5, cz); g.add(cs);
+    const cb = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.4,0.06), tMat);
+    cb.position.set(cx, 0.74, cz - 0.27 * Math.cos(angle));
+    cb.rotation.y = -angle; g.add(cb);
+  }
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+makeConfTable(-17, 6);
+
+// Reception desk (front)
+function makeReception(x, z) {
+  const g = new THREE.Group();
+  const m = new THREE.MeshStandardMaterial({ color: 0x080e1e, roughness: 0.6, metalness: 0.4 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.5, 1.15, 0.8), m);
+  body.position.y = 0.575; g.add(body);
+  const top2 = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.08, 1.0), m);
+  top2.position.y = 1.19; g.add(top2);
+  // Small monitor on reception
+  const rm = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.5,0.06), m);
+  rm.position.set(1.2, 1.5, 0); g.add(rm);
+  const rs = new THREE.Mesh(new THREE.PlaneGeometry(0.58,0.38),
+    new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.2 }));
+  rs.position.set(1.2, 1.5, 0.035); g.add(rs);
+  const rl = new THREE.PointLight(0x0ea5e9, 0.3, 4);
+  rl.position.set(1.2, 1.8, 0.5); g.add(rl);
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+makeReception(0, 16);
+
+// Whiteboard (back wall)
+function makeWhiteboard(x, y, z) {
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(5, 2.5, 0.08),
+    new THREE.MeshStandardMaterial({ color: 0x080e1a, roughness: 0.5, metalness: 0.4 }));
+  g.add(frame);
+  const board = new THREE.Mesh(new THREE.PlaneGeometry(4.7, 2.2),
+    new THREE.MeshBasicMaterial({ color: 0x0a1830, transparent: true, opacity: 0.9 }));
+  board.position.z = 0.05; g.add(board);
+  // Some "lines" on board
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x1a4060 });
+  for (let li = 0; li < 5; li++) {
+    const pts = [new THREE.Vector3(-2.2, 0.7 - li * 0.38, 0.06), new THREE.Vector3(2.2, 0.7 - li * 0.38, 0.06)];
+    scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+  }
+  const wl = new THREE.PointLight(0x1a3a6a, 0.4, 8);
+  wl.position.set(0, 0.5, 1); g.add(wl);
+  g.position.set(x, y, z);
+  scene.add(g);
+}
+makeWhiteboard(-8, 3.8, -19.8);
+
+// ── Orbit controls ───────────────────────────────────
+let isDragging = false, prevMouse = { x:0, y:0 };
+let spherical = { theta: 0, phi: 0.5, radius: 34 };
+
+renderer.domElement.addEventListener('mousedown', e => {
+  isDragging = true;
+  prevMouse = { x: e.clientX, y: e.clientY };
+});
+window.addEventListener('mouseup', () => isDragging = false);
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  spherical.theta -= (e.clientX - prevMouse.x) * 0.005;
+  spherical.phi = Math.max(0.15, Math.min(1.35, spherical.phi + (e.clientY - prevMouse.y) * 0.005));
+  prevMouse = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('wheel', e => {
+  spherical.radius = Math.max(10, Math.min(60, spherical.radius + e.deltaY * 0.025));
+});
+
+// ── Hover / Speech bubble ────────────────────────────
+const raycaster = new THREE.Raycaster();
+const mouse2d   = new THREE.Vector2();
+const bubble    = document.getElementById('speech-bubble');
+const hoverTargets = [];
+AGENTS.forEach(a => {
+  hoverTargets.push(agentNPCs[a.id].head, agentNPCs[a.id].torso);
+});
+
+renderer.domElement.addEventListener('mousemove', e => {
+  mouse2d.x =  (e.clientX / innerWidth)  * 2 - 1;
+  mouse2d.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse2d, camera);
+  const hits = raycaster.intersectObjects(hoverTargets);
+  if (hits.length) {
+    const id   = hits[0].object.userData.agentId;
+    const ag   = AGENTS.find(a => a.id === id);
+    const stateMap = { idle:'resting...', working:'working hard!', done:'all done!', error:'ran into an error' };
+    const msg  = document.getElementById('msg-' + id)?.textContent || '...';
+    bubble.textContent = `${ag.name} (${ag.role})\n${stateMap[agentStates[id]] || ''}\n"${msg}"`;
+    bubble.style.left  = (e.clientX + 16) + 'px';
+    bubble.style.top   = (e.clientY - 40) + 'px';
+    bubble.classList.add('visible');
+    document.body.style.cursor = 'pointer';
+  } else {
+    bubble.classList.remove('visible');
+    document.body.style.cursor = 'default';
+  }
+});
+
+// ── Animation loop ───────────────────────────────────
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // Camera orbit
+  const sinP = Math.sin(spherical.phi);
+  camera.position.set(
+    Math.sin(spherical.theta) * sinP * spherical.radius,
+    Math.cos(spherical.phi)  * spherical.radius,
+    Math.cos(spherical.theta) * sinP * spherical.radius
+  );
+  camera.lookAt(0, 1, -2);
+
+  // NPC animations
+  AGENTS.forEach((agent, i) => {
+    const { head, lArmG, rArmG, lForeG, rForeG, glow, torso } = agentNPCs[agent.id];
+    const { screenMat } = agentDesks[agent.id];
+    const state  = agentStates[agent.id];
+    const off    = i * 1.4;
+    const parent = torso.parent; // npc group
+
+    if (state === 'working') {
+      // Bob torso
+      parent.position.y = Math.sin(t * 3.5 + off) * 0.05;
+      // Head bobs + slight look-down toward desk
+      head.rotation.x = -0.2 + Math.sin(t * 2.5 + off) * 0.08;
+      head.rotation.y = Math.sin(t * 1.2 + off) * 0.18;
+      // Typing arms: alternate up/down from elbow
+      lForeG.rotation.x = -0.6 + Math.sin(t * 6 + off) * 0.35;
+      rForeG.rotation.x = -0.6 + Math.sin(t * 6 + off + Math.PI) * 0.35;
+      // Lean forward
+      lArmG.rotation.x =  0.55 + Math.sin(t * 0.8 + off) * 0.05;
+      rArmG.rotation.x =  0.55 + Math.sin(t * 0.8 + off + 0.5) * 0.05;
+      // Pulsing glow + screen
+      glow.intensity = 0.7 + Math.sin(t * 7 + off) * 0.35;
+      screenMat.opacity = 0.32 + Math.sin(t * 5 + off) * 0.12;
+    } else if (state === 'done') {
+      // Relaxed, occasional head turn
+      parent.position.y = Math.sin(t * 1.2 + off) * 0.018;
+      head.rotation.x   = 0;
+      head.rotation.y   = Math.sin(t * 0.6 + off) * 0.12;
+      lArmG.rotation.x  = 0.2;
+      rArmG.rotation.x  = 0.2;
+      lForeG.rotation.x = -0.2;
+      rForeG.rotation.x = -0.2;
+      glow.intensity     = 0.4;
+      screenMat.opacity  = 0.22;
+    } else if (state === 'error') {
+      // Frustrated shaking
+      parent.position.y = Math.sin(t * 14 + off) * 0.07;
+      head.rotation.z   = Math.sin(t * 10 + off) * 0.1;
+      head.rotation.y   = Math.sin(t * 8 + off) * 0.2;
+      glow.intensity     = 0.9 + Math.sin(t * 18) * 0.5;
+      screenMat.opacity  = 0.4 + Math.sin(t * 18) * 0.2;
+    } else {
+      // Idle - slow breathe + subtle look around
+      parent.position.y = Math.sin(t * 0.7 + off) * 0.012;
+      head.rotation.x   = 0;
+      head.rotation.y   = Math.sin(t * 0.45 + off) * 0.08;
+      lArmG.rotation.x  = 0.1 + Math.sin(t * 0.5 + off) * 0.03;
+      rArmG.rotation.x  = 0.1 + Math.sin(t * 0.5 + off + 1) * 0.03;
+      lForeG.rotation.x = 0;
+      rForeG.rotation.x = 0;
+      glow.intensity     = 0.22;
+      screenMat.opacity  = 0.07;
+    }
+  });
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ════════════════════════════════════════════════════
+//  UI & WEBSOCKET
+// ════════════════════════════════════════════════════
+
+const PIPE_ORDER = ['architect','coder','debugger','tester','reviewer'];
+
+function setPipelineNode(name, state) {
+  const node = document.getElementById('pn-' + name);
+  const dot  = document.getElementById('pd-' + name);
+  if (!node || !dot) return;
+  node.className = 'pipe-node ' + state;
+  dot.className  = 'pipe-dot '  + state;
+  // dot icon
+  dot.textContent = state === 'done' ? '\u2713' : state === 'error' ? '\u2715' : '\u25cf';
+  // connectors
+  const idx = PIPE_ORDER.indexOf(name);
+  if (idx > 0) {
+    const conn = document.getElementById('pc-' + (idx-1));
+    if (conn) {
+      conn.className = 'pipe-connector' + (state === 'done' ? ' done' : state === 'working' ? ' lit' : '');
+    }
+  }
+}
+
+function resetPipeline() {
+  PIPE_ORDER.forEach(n => setPipelineNode(n, 'idle'));
+  document.querySelectorAll('.pipe-connector').forEach(c => c.className = 'pipe-connector');
+}
+
+function updateAgent(name, info) {
+  agentStates[name] = info.state;
+
+  const card  = document.getElementById('card-'  + name);
+  const badge = document.getElementById('badge-' + name);
+  const msg   = document.getElementById('msg-'   + name);
+  const prog  = document.getElementById('prog-'  + name);
+  if (!card) return;
+
+  const prevState = card.dataset.state || 'idle';
+  card.className  = 'agent-card ' + info.state;
+  card.dataset.state = info.state;
+
+  if (badge) {
+    badge.className  = 'agent-badge badge-' + info.state;
+    badge.textContent = info.state.toUpperCase();
+  }
+  if (msg)  msg.textContent = info.message;
+  if (prog) prog.style.width = (info.progress || 0) + '%';
+
+  // Celebrate card when done
+  if (info.state === 'done' && prevState !== 'done') {
+    card.classList.add('celebrate');
+    card.addEventListener('animationend', () => card.classList.remove('celebrate'), { once: true });
+  }
+
+  setPipelineNode(name, info.state);
+}
+
+function addLog(entry) {
+  const div = document.createElement('div');
+  div.className = 'log-entry fresh';
+  div.innerHTML = `<span class="log-time">${entry.time}</span><span class="log-msg">${entry.msg}</span>`;
+  const container = document.getElementById('log-entries');
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  setTimeout(() => div.classList.remove('fresh'), 1200);
+  while (container.children.length > 35) container.removeChild(container.firstChild);
+}
+
+function setHud(cls, text) {
+  const el = document.getElementById('hud-status');
+  el.className = cls;
+  document.getElementById('hud-status-text').textContent = text;
+}
+
+let toastCount = 0;
+function showToast(text, type) {
+  const tc = document.getElementById('toasts');
+  const t  = document.createElement('div');
+  t.className = `toast t-${type}`;
+  t.textContent = text;
+  tc.appendChild(t);
+  toastCount++;
+  setTimeout(() => {
+    t.classList.add('out');
+    t.addEventListener('animationend', () => t.remove(), { once: true });
+  }, 3200);
+}
+
+function allCheer() {
+  AGENTS.forEach((a, i) => {
+    setTimeout(() => {
+      const { glow } = agentNPCs[a.id];
+      const orig = glow.intensity;
+      glow.intensity = 2.5;
+      setTimeout(() => glow.intensity = orig, 900);
+    }, i * 180);
+  });
+}
+
+function switchTab(name) {
+  const tabs = ['plan','code','tests','review'];
+  document.querySelectorAll('.out-tab').forEach((t, i) => t.classList.toggle('active', tabs[i] === name));
+  document.querySelectorAll('.out-pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+}
+
+// ── WebSocket ────────────────────────────────────────
+const AGENT_EMOJI = { architect:'&#129504;', coder:'&#128187;', debugger:'&#128027;', tester:'&#129514;', reviewer:'&#128269;' };
+const AGENT_NAMES = { architect:'Bob', coder:'Nia', debugger:'Rex', tester:'Zoe', reviewer:'Max' };
+
+let ws;
+function connectWS() {
+  ws = new WebSocket('ws://localhost:5000/ws');
+  ws.onopen  = () => console.log('WS connected');
+  ws.onclose = () => setTimeout(connectWS, 2000);
+  ws.onmessage = e => {
+    const { event, data } = JSON.parse(e.data);
+
+    if (event === 'init') {
+      Object.entries(data.agents).forEach(([n, info]) => updateAgent(n, info));
+      Object.entries(data.output).forEach(([type, content]) => {
+        if (content) { const el = document.getElementById('text-' + type); if (el) el.textContent = content; }
+      });
+
+    } else if (event === 'agent_update') {
+      const prev = agentStates[data.name];
+      updateAgent(data.name, data);
+      const name = AGENT_NAMES[data.name] || data.name;
+      if (data.state === 'working' && prev !== 'working') {
+        showToast(`${name} started — ${data.message}`, 'working');
+      } else if (data.state === 'done' && prev !== 'done') {
+        showToast(`${name} finished — ${data.message}`, 'done');
+      } else if (data.state === 'error') {
+        showToast(`${name} error — ${data.message.slice(0,50)}`, 'error');
+      }
+
+    } else if (event === 'output_update') {
+      const el = document.getElementById('text-' + data.type);
+      if (el) el.textContent = data.content;
+
+    } else if (event === 'log') {
+      addLog(data);
+
+    } else if (event === 'build_start') {
+      resetPipeline();
+      document.getElementById('launch-btn').style.display = 'none';
+      document.getElementById('download-btn').style.display = 'none';
+      const req = data.request.length > 38 ? data.request.slice(0,38) + '...' : data.request;
+      setHud('building', 'BUILDING');
+      document.getElementById('build-btn').disabled = true;
+      showToast(`Build started: "${req}"`, 'working');
+
+    } else if (event === 'build_complete') {
+      const success = !(data && data.success === false);
+      document.getElementById('build-btn').disabled = false;
+
+      if (success) {
+        setHud('done', 'COMPLETE');
+        document.getElementById('launch-btn').style.display = 'block';
+        document.getElementById('download-btn').style.display = 'block';
+        allCheer();
+        showToast('Build complete! Click "Test App" to run it.', 'complete');
+      } else {
+        setHud('error', 'FAILED');
+        document.getElementById('launch-btn').style.display = 'none';
+        document.getElementById('download-btn').style.display = 'none';
+      }
+
+    } else if (event === 'build_error') {
+      setHud('error', 'ERROR');
+      document.getElementById('build-btn').disabled = false;
+      showToast('Build failed: ' + data.error.slice(0,45), 'error');
+    }
+  };
+}
+
+async function startBuild() {
+  const input = document.getElementById('build-input');
+  const req   = input.value.trim();
+  if (!req) return;
+  input.value = '';
+  try {
+    const res = await fetch('http://localhost:5000/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request: req })
+    });
+    if (!res.ok) alert('Server error — is builder_server.py running?');
+  } catch (e) {
+    alert('Cannot connect.\nRun: python builder_server.py');
+  }
+}
+
+document.getElementById('build-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startBuild();
+});
+
+let runningStream = null;
+
+async function launchApp() {
+  const modal = document.getElementById('terminal-modal');
+  const body  = document.getElementById('terminal-body');
+  modal.classList.add('open');
+  body.innerHTML = '<span class="t-dim">$ python built_app.py</span>\n';
+
+  // Abort any previous stream
+  if (runningStream) runningStream.abort();
+  const controller = new AbortController();
+  runningStream = controller;
+
+  try {
+    const res = await fetch('http://localhost:5000/run', {
+      method: 'POST',
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      body.innerHTML += `<span class="t-err">Error: ${err.error}</span>`;
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = dec.decode(value);
+      // SSE format: lines starting with "data: "
+      chunk.split('\n').forEach(line => {
+        if (!line.startsWith('data: ')) return;
+        const text = line.slice(6);
+        if (!text) return;
+        const span = document.createElement('span');
+        span.className = 't-line' + (text.toLowerCase().includes('error') ? ' t-err' : '');
+        span.textContent = text;
+        body.appendChild(span);
+        body.appendChild(document.createTextNode('\n'));
+        body.scrollTop = body.scrollHeight;
+      });
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      body.innerHTML += `<span class="t-err">Connection error: ${e.message}</span>`;
+    }
+  }
+}
+
+connectWS();
+</script>
+</body>
+</html>
