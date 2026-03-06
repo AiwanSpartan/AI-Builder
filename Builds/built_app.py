@@ -1,28 +1,58 @@
-Your code is fine and does not have any syntax errors. The setup.py file should be written in a correct Python script format. 
+from flask import Flask, request, render_template, redirect, url_for
+import sqlite3
 
-The 'pip install setuptools' command should be used in your terminal to install setuptools, not in the Python file. 
+app = Flask(__name__)
 
-Make sure that you have a Python file (not Python script) to run it. If you have one, then this should work fine:
+# Initialize database
+def init_db():
+    conn = sqlite3.connect('todo.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS tasks
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  text TEXT NOT NULL,
+                  completed BOOLEAN DEFAULT 0)''')
+    conn.commit()
+    conn.close()
 
-```python
-# app/setup.py
-from setuptools import setup, find_packages
+# Route for home page
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        task_text = request.form.get('task')
+        if task_text:
+            conn = sqlite3.connect('todo.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO tasks (text) VALUES (?)", (task_text,))
+            conn.commit()
+            conn.close()
+        return redirect(url_for('index'))
+    
+    conn = sqlite3.connect('todo.db')
+    c = conn.cursor()
+    tasks = c.execute("SELECT * FROM tasks").fetchall()
+    conn.close()
+    return render_template('index.html', tasks=tasks)
 
-setup(
-    name='3d_file_system_explorer',
-    version='0.1',
-    packages=find_packages(),
-    install_requires=[
-             'flask',
-             'ollama'
-         ]
-)
-```
+# Route for completing a task
+@app.route('/complete/<int:task_id>')
+def complete(task_id):
+    conn = sqlite3.connect('todo.db')
+    c = conn.cursor()
+    c.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for('index'))
 
-Then you can install it with pip:
+# Route for deleting a task
+@app.route('/delete/<int:task_id>')
+def delete(task_id):
+    conn = sqlite3.connect('todo.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for('index'))
 
-```
-pip install -e ./app
-```
-
-Make sure the `app` directory is in the same directory as your `setup.py`.
+if __name__ == '__main__':
+    init_db()
+    app.run(debug=True)
