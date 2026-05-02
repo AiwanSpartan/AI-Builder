@@ -643,6 +643,64 @@ body.no-webgl #canvas-container::after {
   flex-direction: column;
   box-shadow: 0 30px 80px rgba(0,0,0,0.65), 0 0 40px rgba(16,185,129,0.06);
   overflow: hidden;
+  transition: width 0.3s ease, max-height 0.3s ease;
+}
+#terminal-box.preview-mode {
+  width: min(1280px, 96vw);
+  max-height: 92vh;
+  height: 92vh;
+}
+#app-preview-wrap {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  background: #ffffff;
+  min-height: 0;
+}
+#terminal-box.preview-mode #app-preview-wrap { display: flex; }
+#terminal-box.preview-mode #terminal-body,
+#terminal-box.preview-mode #launch-progress-view { display: none; }
+#app-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #0a1628;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+#app-preview-url {
+  flex: 1;
+  background: #020810;
+  color: var(--accent);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(14,165,233,0.2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#app-preview-bar button {
+  background: rgba(14,165,233,0.12);
+  border: 1px solid rgba(14,165,233,0.35);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 5px 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+#app-preview-bar button:hover { background: rgba(14,165,233,0.22); }
+#app-preview-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #ffffff;
+  min-height: 0;
 }
 #terminal-head {
   display: flex;
@@ -716,6 +774,127 @@ body.no-webgl #canvas-container::after {
   background: rgba(99,102,241,0.14);
   border-color: rgba(99,102,241,0.5);
 }
+
+/* ── Build Complete action panel ─────────────────── */
+#build-actions {
+  display: none;
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 180;
+  background: linear-gradient(180deg, rgba(8,18,36,0.97) 0%, rgba(4,10,22,0.97) 100%);
+  border: 1px solid rgba(16,185,129,0.4);
+  border-radius: 14px;
+  padding: 18px 22px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 28px rgba(16,185,129,0.15);
+  animation: buildActionsPop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+#build-actions.visible { display: flex; flex-direction: column; gap: 12px; }
+@keyframes buildActionsPop {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(20px) scale(0.92); }
+  100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+#build-actions-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--success);
+  text-align: center;
+}
+#build-actions-row { display: flex; gap: 12px; align-items: stretch; }
+.ba-btn {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.6px;
+  padding: 12px 22px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.18s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+  justify-content: center;
+}
+.ba-btn-test {
+  background: linear-gradient(180deg, rgba(16,185,129,0.22), rgba(16,185,129,0.12));
+  border: 1px solid rgba(16,185,129,0.6);
+  color: #6ee7b7;
+}
+.ba-btn-test:hover {
+  background: linear-gradient(180deg, rgba(16,185,129,0.34), rgba(16,185,129,0.2));
+  box-shadow: 0 0 22px rgba(16,185,129,0.32);
+  transform: translateY(-1px);
+}
+.ba-btn-download {
+  background: linear-gradient(180deg, rgba(99,102,241,0.2), rgba(99,102,241,0.1));
+  border: 1px solid rgba(99,102,241,0.55);
+  color: #c7d2fe;
+}
+.ba-btn-download:hover {
+  background: linear-gradient(180deg, rgba(99,102,241,0.32), rgba(99,102,241,0.18));
+  box-shadow: 0 0 22px rgba(99,102,241,0.3);
+  transform: translateY(-1px);
+}
+#build-actions-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+#build-actions-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+
+/* ── Launch progress view ────────────────────────── */
+#launch-progress-view {
+  padding: 28px 24px;
+  display: none;
+  flex-direction: column;
+  gap: 18px;
+}
+#launch-step-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+#launch-progress-track {
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+#launch-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #0ea5e9, #6366f1);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+#launch-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.launch-step-item {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.launch-step-item.active { color: var(--accent); }
+.launch-step-item.done   { color: var(--success); }
+.launch-step-item.error  { color: var(--error); }
 
 /* ── NPC Chat Dialog ─────────────────────────────── */
 #npc-chat {
@@ -880,6 +1059,83 @@ body.no-webgl #canvas-container::after {
 }
 #interact-prompt.visible { display: block; }
 @keyframes promptPop { from { opacity:0; transform: translateX(-50%) scale(0.92); } to { opacity:1; transform: translateX(-50%) scale(1); } }
+
+/* ── Mini-game HUD ───────────────────────────────── */
+#minigame-hud {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
+  z-index: 110;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 130px;
+}
+#minigame-hud.visible { display: flex; }
+#mg-title { color: var(--accent); font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+#mg-score { font-size: 18px; font-weight: bold; color: #fbbf24; }
+#mg-hint  { color: var(--muted); font-size: 9px; }
+.coin-collect-pop {
+  position: fixed;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: #fbbf24;
+  font-weight: bold;
+  z-index: 200;
+  animation: coinPop 0.9s ease-out forwards;
+}
+@keyframes coinPop {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-48px) scale(1.3); }
+}
+
+/* ── Basketball power meter ──────────────────────────── */
+#bb-power-overlay {
+  display: none;
+  position: fixed;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  z-index: 300;
+  pointer-events: none;
+  width: 130px;
+}
+.bb-power-track {
+  width: 100%;
+  height: 10px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.bb-power-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 6px;
+  background: #22c55e;
+  transition: width 0.04s linear, background 0.12s;
+}
+.bb-power-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #f1f5f9;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 4px #000;
+}
+.bb-aim-hint {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+}
 </style>
 </head>
 <body>
@@ -1025,6 +1281,20 @@ body.no-webgl #canvas-container::after {
   <button id="build-btn" onclick="startBuild()">Build</button>
 </div>
 
+<!-- Build Complete action panel -->
+<div id="build-actions">
+  <button type="button" id="build-actions-close" onclick="hideBuildActions()" aria-label="Close">×</button>
+  <div id="build-actions-title">✓ Build Complete</div>
+  <div id="build-actions-row">
+    <button type="button" class="ba-btn ba-btn-test" onclick="hideBuildActions(); launchApp();">
+      <span style="font-size:16px;">▶</span> Test Your App
+    </button>
+    <button type="button" class="ba-btn ba-btn-download" onclick="downloadLatestBuild()">
+      <span style="font-size:16px;">↓</span> Download Code (ZIP)
+    </button>
+  </div>
+</div>
+
 <!-- Toasts -->
 <div id="toasts"></div>
 
@@ -1048,27 +1318,64 @@ body.no-webgl #canvas-container::after {
   </div>
 </div>
 
+<!-- Mini-game HUD -->
+<div id="minigame-hud">
+  <div id="mg-title">COINS + GAMES</div>
+  <div id="mg-score">0</div>
+  <div id="mg-hint">SPACE jump • drag near hoop</div>
+</div>
+
+<!-- Basketball power meter (shown while dragging) -->
+<div id="bb-power-overlay">
+  <div class="bb-aim-hint">release to shoot</div>
+  <div class="bb-power-track"><div class="bb-power-fill"></div></div>
+  <div class="bb-power-label">0% power</div>
+</div>
+
 <!-- Controls hint -->
 <div id="controls-hint">
   <span>WASD</span> / Arrow keys — move<br>
-  <span>Drag</span> — rotate camera<br>
-  <span>Click NPC / Orb</span> — open chat
+  <span>SHIFT</span> — run<br>
+  <span>SPACE</span> — jump<br>
+  <span>Drag (near hoop)</span> — shoot 🏀<br>
+  <span>Drag</span> — orbit camera<br>
+  <span>Scroll</span> — zoom<br>
+  <span>Click NPC / Orb</span> — chat
 </div>
 
 <!-- Interact prompt -->
 <div id="interact-prompt"></div>
 
-<!-- Terminal Modal -->
+<!-- Terminal / Launch Modal -->
 <div id="terminal-modal">
   <div id="terminal-box">
     <div id="terminal-head">
-      <h2>▶ App Terminal — main.py</h2>
+      <h2 id="terminal-title">▶ Launching App</h2>
       <div id="terminal-head-btns">
         <button type="button" id="rerun-btn" onclick="launchApp()" style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:var(--success);font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:5px;cursor:pointer;">↺ Re-run</button>
         <button type="button" onclick="document.getElementById('terminal-modal').classList.remove('open')" style="background:transparent;border:1px solid rgba(255,255,255,0.09);color:#445;cursor:pointer;border-radius:6px;padding:4px 12px;font-size:12px;font-family:var(--sans);">Close</button>
       </div>
     </div>
+    <!-- Launch progress view (shown while launching) -->
+    <div id="launch-progress-view">
+      <div id="launch-step-label">Preparing...</div>
+      <div id="launch-progress-track">
+        <div id="launch-progress-bar"></div>
+      </div>
+      <div id="launch-steps-list"></div>
+    </div>
+    <!-- Normal terminal body (shown after launch or on error) -->
     <div id="terminal-body"><span class="t-dim">Waiting for output...</span></div>
+    <!-- Embedded app preview (shown after successful launch) -->
+    <div id="app-preview-wrap">
+      <div id="app-preview-bar">
+        <span style="color:var(--success);font-weight:600;">▶ LIVE</span>
+        <span id="app-preview-url"></span>
+        <button type="button" id="app-preview-reload" onclick="reloadAppPreview()">↻ Reload</button>
+        <button type="button" id="app-preview-newtab" onclick="openAppInNewTab()">↗ New tab</button>
+      </div>
+      <iframe id="app-preview-frame" sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-modals" title="Generated app preview"></iframe>
+    </div>
   </div>
 </div>
 
@@ -1095,6 +1402,8 @@ body.no-webgl #canvas-container::after {
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="physics.js"></script>
+<script src="minigames.js"></script>
 <script>
 const HAS_HTTP_HOST = /^https?:$/i.test(window.location.protocol) && !!window.location.host;
 const API_BASE = HAS_HTTP_HOST
@@ -1365,11 +1674,50 @@ function makeDesk(agent) {
   const mBase = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.04,0.25), legMat);
   mBase.position.set(0, 0.82, -0.42); g.add(mBase);
 
-  // Screen glow (faces +Z = toward camera)
+  // Screen canvas texture — per-role content
+  const screenCanvas = document.createElement('canvas');
+  screenCanvas.width = 256; screenCanvas.height = 160;
+  const screenCtx = screenCanvas.getContext('2d');
+  const screenTex = new THREE.CanvasTexture(screenCanvas);
+
+  const _SCREEN_LINES = {
+    architect: ['> SYSTEM DESIGN','[Auth Module]','  |--[API Layer]','  |--[DB Layer]','[Queue Service]','plan: v2.4-draft'],
+    coder:     ['def process(data):','  result = []','  for x in data:','    result.append(x)','  return result','# TODO: optimize'],
+    debugger:  ['ERROR line 42:','  NullRef: obj','  stack: main()','  >> checking...','  fix: add guard','[FIXED] re-test'],
+    tester:    ['[PASS] auth_test','[PASS] api_test','[FAIL] db_conn','  expected: 200','  got: 500','running: 3/7...'],
+    reviewer:  ['+ add validation','- rm dead code','! refactor loop','+ type safety','- unused import','LGTM after fix'],
+  };
+
+  function _drawScreen(agentId, cursor) {
+    const lines = _SCREEN_LINES[agentId] || _SCREEN_LINES.coder;
+    const r = (agent.color >> 16) & 0xff;
+    const gv = (agent.color >> 8) & 0xff;
+    const b  = agent.color & 0xff;
+    screenCtx.fillStyle = '#050d1a';
+    screenCtx.fillRect(0, 0, 256, 160);
+    screenCtx.font = '12px monospace';
+    lines.forEach((line, i) => {
+      const alpha = 0.45 + (i % 2) * 0.25;
+      const col = line.startsWith('+') ? `rgba(34,197,94,${alpha})` :
+                  line.startsWith('-') ? `rgba(239,68,68,${alpha})` :
+                  line.startsWith('[PASS]') ? `rgba(34,197,94,${alpha})` :
+                  line.startsWith('[FAIL]') ? `rgba(239,68,68,${alpha})` :
+                  line.startsWith('ERROR') ? `rgba(239,68,68,${alpha})` :
+                  `rgba(${r},${gv},${b},${alpha})`;
+      screenCtx.fillStyle = col;
+      screenCtx.fillText(line, 8, 20 + i * 22);
+    });
+    if (cursor) {
+      screenCtx.fillStyle = `rgba(${r},${gv},${b},0.9)`;
+      screenCtx.fillRect(8, 148, 8, 2);
+    }
+    screenTex.needsUpdate = true;
+  }
+
+  _drawScreen(agent.id, false);
+
   const screenGeo = new THREE.PlaneGeometry(1.3, 0.78);
-  const screenMat = new THREE.MeshBasicMaterial({
-    color: agent.color, transparent: true, opacity: 0.12, side: THREE.DoubleSide
-  });
+  const screenMat = new THREE.MeshBasicMaterial({ map: screenTex, transparent: true, opacity: 0.88, side: THREE.DoubleSide });
   const screen = new THREE.Mesh(screenGeo, screenMat);
   screen.position.set(0, 1.5, -0.375);
   g.add(screen);
@@ -1387,7 +1735,7 @@ function makeDesk(agent) {
   );
   cupTop.position.set(0.9, 0.96, 0.2); g.add(cupTop);
 
-  return { group: g, screenMat };
+  return { group: g, screenMat, screenCanvas, screenTex, drawScreen: _drawScreen };
 }
 
 // Screen scan line texture
@@ -2126,13 +2474,19 @@ window.addEventListener('focusin', () => {
 });
 
 // ── Camera ───────────────────────────────────────────
-let camTheta = 0;   // horizontal orbit around player
+let camTheta = 0;          // horizontal orbit
+let camPhi   = 0.38;       // vertical angle (radians, 0=horizon, π/2=top-down)
+let camZoom  = 9;          // distance from player
+const CAM_PHI_MIN  = 0.10;
+const CAM_PHI_MAX  = 1.20;
+const CAM_ZOOM_MIN = 3;
+const CAM_ZOOM_MAX = 22;
 let isDragging = false, prevMouse = { x:0, y:0 };
-const CAM_DIST  = 9;
-const CAM_HEIGHT = 5.5;
 
 renderer.domElement.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
+  // Let basketball drag take priority when near the hoop during a game
+  if (MiniGames.active && MiniGames.nearHoop()) return;
   isDragging = true;
   prevMouse = { x: e.clientX, y: e.clientY };
 });
@@ -2140,8 +2494,16 @@ window.addEventListener('mouseup', () => isDragging = false);
 window.addEventListener('mousemove', e => {
   if (!isDragging) return;
   camTheta -= (e.clientX - prevMouse.x) * 0.006;
+  camPhi    = Math.max(CAM_PHI_MIN, Math.min(CAM_PHI_MAX,
+               camPhi + (e.clientY - prevMouse.y) * 0.004));
   prevMouse = { x: e.clientX, y: e.clientY };
 });
+// Scroll to zoom
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camZoom = Math.max(CAM_ZOOM_MIN, Math.min(CAM_ZOOM_MAX,
+            camZoom + e.deltaY * 0.012));
+}, { passive: false });
 
 // Keep old spherical for compat with any remaining code
 let spherical = { theta: 0, phi: 0.5, radius: 34 };
@@ -2150,7 +2512,14 @@ let spherical = { theta: 0, phi: 0.5, radius: 34 };
 const BOUNDS = { minX: -22, maxX: 22, minZ: -18, maxZ: 18 };
 let playerMoving = false;
 let playerFace = 0;
-const camPos = new THREE.Vector3(0, CAM_HEIGHT, CAM_DIST);
+const camPos = new THREE.Vector3(0, 5.5, 9);
+let _footstepTimer = 0;
+let _proxPulseTimer = 0;
+
+// Physics and mini-game state live in Physics / MiniGames modules (physics.js / minigames.js).
+// These aliases let any legacy inline references still resolve.
+const _physicsRef = () => window.Physics;   // use Physics.playerVY, Physics.playerOnGround
+const _mgRef      = () => window.MiniGames; // use MiniGames.active, MiniGames.score
 
 function updatePlayer(dt) {
   if (isTypingContext()) {
@@ -2168,20 +2537,56 @@ function updatePlayer(dt) {
   playerMoving = (dx !== 0 || dz !== 0);
   if (!playerMoving) return;
 
+  // Normalize so diagonal speed equals cardinal speed
+  const mag = Math.sqrt(dx * dx + dz * dz);
+  dx /= mag; dz /= mag;
+
   const speed = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.12 : 0.07;
-  // Rotate movement by camera angle
+  // Rotate movement direction by camera yaw
   const cos = Math.cos(camTheta), sin = Math.sin(camTheta);
   const wx = dx * cos + dz * sin;
   const wz = -dx * sin + dz * cos;
 
-  const nx = Math.max(BOUNDS.minX, Math.min(BOUNDS.maxX, player.group.position.x + wx * speed));
-  const nz = Math.max(BOUNDS.minZ, Math.min(BOUNDS.maxZ, player.group.position.z + wz * speed));
-  player.group.position.x = nx;
-  player.group.position.z = nz;
+  const px = player.group.position.x;
+  const pz = player.group.position.z;
+  const py = player.group.position.y;
+  const r  = 0.38;
+
+  let nx = Math.max(BOUNDS.minX, Math.min(BOUNDS.maxX, px + wx * speed));
+  let nz = Math.max(BOUNDS.minZ, Math.min(BOUNDS.maxZ, pz + wz * speed));
+
+  // Solid blocking: test full move, then axis-split for sliding along walls
+  if (!Physics.wouldCollide(nx, nz, r)) {
+    player.group.position.x = nx;
+    player.group.position.z = nz;
+  } else if (!Physics.wouldCollide(nx, pz, r)) {
+    player.group.position.x = nx;  // slide along Z wall
+  } else if (!Physics.wouldCollide(px, nz, r)) {
+    player.group.position.z = nz;  // slide along X wall
+  }
+  // else fully blocked — don't move
+
+  // Obby side walls still resolved via push-out (they're not furniture)
+  const resolved = Physics.resolveStaticCollision(
+    player.group.position.x, player.group.position.z, py, r
+  );
+  player.group.position.x = resolved.x;
+  player.group.position.z = resolved.z;
 
   if (Math.abs(wx) > 0.001 || Math.abs(wz) > 0.001) {
     playerFace = Math.atan2(wx, wz);
     player.group.rotation.y = playerFace;
+  }
+}
+
+function tickFootsteps(dt) {
+  if (!playerMoving) { _footstepTimer = 0; return; }
+  _footstepTimer += dt;
+  const interval = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.22 : 0.32;
+  if (_footstepTimer >= interval) {
+    _footstepTimer = 0;
+    playTone(90 + Math.random() * 20, 0.045, { type: 'sine', volume: 0.028, endFreq: 60 });
+    setTimeout(() => playTone(80 + Math.random() * 15, 0.035, { type: 'sine', volume: 0.018, endFreq: 55 }), 60);
   }
 }
 
@@ -2228,14 +2633,18 @@ renderer.domElement.addEventListener('mousemove', e => {
 const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
 let sfxContext = null;
 let sfxMasterGain = null;
+let bgmMasterGain = null;   // separate gain for music (won't duck SFX)
 
 function ensureSfxContext() {
   if (!AudioContextCtor) return false;
   if (!sfxContext) {
     sfxContext = new AudioContextCtor();
     sfxMasterGain = sfxContext.createGain();
-    sfxMasterGain.gain.value = 0.08;
+    sfxMasterGain.gain.value = 0.35;          // louder SFX (was 0.08)
     sfxMasterGain.connect(sfxContext.destination);
+    bgmMasterGain = sfxContext.createGain();
+    bgmMasterGain.gain.value = 0.22;          // music volume
+    bgmMasterGain.connect(sfxContext.destination);
   }
   return true;
 }
@@ -2246,7 +2655,7 @@ async function unlockSfx() {
     try { await sfxContext.resume(); }
     catch (_) {}
   }
-  startBackgroundMusic();
+  startIdleMusic();
 }
 
 function playTone(freq, duration = 0.08, opts = {}) {
@@ -2274,68 +2683,127 @@ function playTone(freq, duration = 0.08, opts = {}) {
   osc.stop(now + duration + 0.06);
 }
 
-let bgmLoopTimer = null;
-let bgmStepIndex = 0;
-let buildLoopTimer = null;
-let buildPulseIndex = 0;
+// Play a soft sustained pad note routed through bgmMasterGain
+function playPad(freq, duration, volume, detune = 0) {
+  if (!ensureSfxContext() || sfxContext.state !== 'running') return;
+  const now = sfxContext.currentTime;
+  const osc  = sfxContext.createOscillator();
+  const gain = sfxContext.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  osc.detune.value = detune;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(volume, now + 0.35);
+  gain.gain.setValueAtTime(volume, now + duration - 0.4);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  osc.connect(gain);
+  gain.connect(bgmMasterGain);
+  osc.start(now);
+  osc.stop(now + duration + 0.05);
+}
 
-const BGM_ROOTS = [174.61, 196.0, 220.0, 196.0, 164.81, 146.83, 164.81, 196.0];
+// ── Idle calm music (Am → F → C → G chord loop, 2 s/chord) ──────────
+// Each entry: [bass, third, fifth, seventh] in Hz
+const IDLE_CHORDS = [
+  { name: 'Am', notes: [110.00, 130.81, 164.81, 220.00, 261.63] }, // A2 C3 E3 A3 C4
+  { name: 'F',  notes: [87.31,  130.81, 174.61, 220.00, 261.63] }, // F2 C3 F3 A3 C4
+  { name: 'C',  notes: [65.41,  130.81, 164.81, 196.00, 261.63] }, // C2 C3 E3 G3 C4
+  { name: 'G',  notes: [98.00,  146.83, 196.00, 246.94, 293.66] }, // G2 D3 G3 B3 D4
+];
+const IDLE_BEAT_MS = 2000;
 
-function runBackgroundMusicLoop() {
+// ── Build tense music (Dm → A → Gm → A chord loop, 1.2 s/chord) ─────
+const BUILD_CHORDS = [
+  { name: 'Dm', notes: [73.42,  110.00, 146.83, 174.61, 220.00] }, // D2 A2 D3 F3 A3
+  { name: 'A',  notes: [110.00, 138.59, 164.81, 220.00, 277.18] }, // A2 C#3 E3 A3 C#4
+  { name: 'Gm', notes: [98.00,  116.54, 146.83, 196.00, 233.08] }, // G2 Bb2 D3 G3 Bb3
+  { name: 'A7', notes: [110.00, 138.59, 174.61, 220.00, 261.63] }, // A2 C#3 F3 A3 C4
+];
+const BUILD_BEAT_MS = 1150;
+
+let _idleTimer = null;
+let _idleChordIdx = 0;
+let _buildMusicTimer = null;
+let _buildChordIdx = 0;
+let _buildPulseTimer = null;
+let _buildPulseIdx = 0;
+
+function _playChord(chord, duration, volumes) {
+  chord.notes.forEach((freq, i) => {
+    const vol = volumes[i] ?? volumes[volumes.length - 1];
+    if (vol <= 0) return;
+    playPad(freq, duration, vol, (i - 2) * 3); // slight detune spread
+  });
+}
+
+function _idleStep() {
   if (!ensureSfxContext() || sfxContext.state !== 'running') {
-    bgmLoopTimer = setTimeout(runBackgroundMusicLoop, 1200);
-    return;
+    _idleTimer = setTimeout(_idleStep, 500); return;
   }
-
-  const root = BGM_ROOTS[bgmStepIndex % BGM_ROOTS.length];
-  playTone(root, 0.56, { type: 'sine', volume: 0.012, attack: 0.08, endFreq: root * 0.997 });
-  playTone(root * 1.5, 0.34, { type: 'triangle', volume: 0.007, attack: 0.04, endFreq: root * 1.48 });
-  if (bgmStepIndex % 2 === 0) {
-    playTone(root * 2.0, 0.16, { type: 'sine', volume: 0.0055, attack: 0.03, endFreq: root * 1.98 });
-  }
-
-  bgmStepIndex += 1;
-  bgmLoopTimer = setTimeout(runBackgroundMusicLoop, 720);
+  const chord = IDLE_CHORDS[_idleChordIdx % IDLE_CHORDS.length];
+  // bass louder, upper voices quieter
+  _playChord(chord, IDLE_BEAT_MS * 0.001 * 1.05, [0.18, 0.10, 0.10, 0.08, 0.06]);
+  _idleChordIdx++;
+  _idleTimer = setTimeout(_idleStep, IDLE_BEAT_MS);
 }
 
-function startBackgroundMusic() {
-  if (bgmLoopTimer) return;
-  runBackgroundMusicLoop();
+function startIdleMusic() {
+  if (_idleTimer || _buildMusicTimer) return; // already playing something
+  _idleStep();
 }
 
-function stopBackgroundMusic() {
-  if (!bgmLoopTimer) return;
-  clearTimeout(bgmLoopTimer);
-  bgmLoopTimer = null;
+function stopIdleMusic() {
+  clearTimeout(_idleTimer);
+  _idleTimer = null;
 }
 
-function runBuildLoopSfx() {
+function _buildMusicStep() {
   if (!ensureSfxContext() || sfxContext.state !== 'running') {
-    buildLoopTimer = setTimeout(runBuildLoopSfx, 1000);
-    return;
+    _buildMusicTimer = setTimeout(_buildMusicStep, 500); return;
   }
+  const chord = BUILD_CHORDS[_buildChordIdx % BUILD_CHORDS.length];
+  _playChord(chord, BUILD_BEAT_MS * 0.001 * 1.1, [0.14, 0.09, 0.09, 0.07, 0.055]);
+  _buildChordIdx++;
+  _buildMusicTimer = setTimeout(_buildMusicStep, BUILD_BEAT_MS);
+}
 
-  const pulse = buildPulseIndex % 5;
-  const base = 155 + pulse * 20 + Math.random() * 8;
-  playTone(base, 0.06, { type: 'triangle', volume: 0.028, endFreq: base * 1.28 });
-  setTimeout(() => {
-    playTone(base * 1.7, 0.04, { type: 'square', volume: 0.014, endFreq: base * 1.45 });
-  }, 80);
+function startBuildMusic() {
+  stopIdleMusic();
+  if (_buildMusicTimer) return;
+  _buildChordIdx = 0;
+  _buildMusicStep();
+}
 
-  buildPulseIndex += 1;
-  buildLoopTimer = setTimeout(runBuildLoopSfx, 880 + Math.random() * 260);
+function stopBuildMusic() {
+  clearTimeout(_buildMusicTimer);
+  _buildMusicTimer = null;
+}
+
+// Build pulse SFX (short blips on top of music)
+function _buildPulseStep() {
+  if (!ensureSfxContext() || sfxContext.state !== 'running') {
+    _buildPulseTimer = setTimeout(_buildPulseStep, 1000); return;
+  }
+  const base = 155 + (_buildPulseIdx % 5) * 20 + Math.random() * 8;
+  playTone(base, 0.06, { type: 'triangle', volume: 0.06, endFreq: base * 1.28 });
+  setTimeout(() => playTone(base * 1.7, 0.04, { type: 'square', volume: 0.035, endFreq: base * 1.45 }), 80);
+  _buildPulseIdx++;
+  _buildPulseTimer = setTimeout(_buildPulseStep, 880 + Math.random() * 260);
 }
 
 function startBuildLoopSfx() {
-  if (buildLoopTimer) return;
-  runBuildLoopSfx();
+  if (_buildPulseTimer) return;
+  _buildPulseStep();
 }
 
 function stopBuildLoopSfx() {
-  if (!buildLoopTimer) return;
-  clearTimeout(buildLoopTimer);
-  buildLoopTimer = null;
+  clearTimeout(_buildPulseTimer);
+  _buildPulseTimer = null;
 }
+
+// kept for backward compat
+function startBackgroundMusic() { startIdleMusic(); }
+function stopBackgroundMusic()  { stopIdleMusic(); }
 
 const AGENT_SOUND_BASE = {
   architect: 262,
@@ -2363,21 +2831,30 @@ function playAgentStateSfx(agentId, state) {
 
 function playBuildSfx(kind) {
   if (kind === 'start') {
-    playTone(220, 0.06, { type: 'triangle', volume: 0.045, endFreq: 300 });
-    setTimeout(() => playTone(300, 0.06, { type: 'triangle', volume: 0.045, endFreq: 380 }), 70);
+    // Rising sweep: build energy
+    playTone(180, 0.07, { type: 'triangle', volume: 0.04, endFreq: 260 });
+    setTimeout(() => playTone(260, 0.07, { type: 'triangle', volume: 0.04, endFreq: 340 }), 75);
+    setTimeout(() => playTone(340, 0.07, { type: 'triangle', volume: 0.04, endFreq: 420 }), 150);
   } else if (kind === 'complete') {
-    playTone(392, 0.07, { type: 'sine', volume: 0.06, endFreq: 523 });
-    setTimeout(() => playTone(523, 0.09, { type: 'sine', volume: 0.06, endFreq: 659 }), 90);
+    // Ascending chord cheer
+    playTone(330, 0.10, { type: 'sine', volume: 0.055, endFreq: 392 });
+    setTimeout(() => playTone(392, 0.10, { type: 'sine', volume: 0.055, endFreq: 494 }), 80);
+    setTimeout(() => playTone(494, 0.12, { type: 'sine', volume: 0.055, endFreq: 587 }), 160);
+    setTimeout(() => playTone(587, 0.18, { type: 'sine', volume: 0.06,  endFreq: 659 }), 250);
+    setTimeout(() => playTone(659, 0.20, { type: 'sine', volume: 0.05,  endFreq: 740 }), 360);
   } else if (kind === 'error') {
-    playTone(180, 0.14, { type: 'square', volume: 0.06, endFreq: 110 });
+    // Descending error tone
+    playTone(380, 0.10, { type: 'sawtooth', volume: 0.05, endFreq: 280 });
+    setTimeout(() => playTone(280, 0.12, { type: 'sawtooth', volume: 0.05, endFreq: 160 }), 110);
+    setTimeout(() => playTone(160, 0.18, { type: 'square',   volume: 0.055, endFreq: 100 }), 230);
   }
 }
 
 function playCatMeowSfx() {
   const base = 510 + Math.random() * 120;
-  playTone(base, 0.11, { type: 'triangle', volume: 0.03, endFreq: base * 0.68 });
+  playTone(base, 0.14, { type: 'triangle', volume: 0.11, endFreq: base * 0.62 });
   setTimeout(() => {
-    playTone(base * 1.2, 0.09, { type: 'triangle', volume: 0.028, endFreq: base * 0.95 });
+    playTone(base * 1.25, 0.12, { type: 'triangle', volume: 0.09, endFreq: base * 0.88 });
   }, 90);
 }
 
@@ -2390,7 +2867,7 @@ function attachButtonClickSfx(buttonId) {
   });
 }
 
-['download-btn', 'npc-chat-send', 'close-output'].forEach(attachButtonClickSfx);
+['download-btn', 'npc-chat-send', 'close-output', 'build-btn', 'launch-btn', 'view-out-btn'].forEach(attachButtonClickSfx);
 ['pointerdown', 'keydown', 'touchstart'].forEach(evt => {
   window.addEventListener(evt, () => unlockSfx(), { once: true, passive: true });
 });
@@ -2406,9 +2883,16 @@ function updateCompanions(dt, t) {
   catPos.x += catDx * catLerp;
   catPos.z += catDz * catLerp;
 
-  if (catDist > 0.03) {
+  if (catDist > 0.5) {
+    // Moving — face movement direction
     const catYaw = Math.atan2(catDx, catDz);
     catCompanion.group.rotation.y = smoothAngle(catCompanion.group.rotation.y, catYaw, Math.min(1, dt * 8));
+  } else {
+    // Settled — face toward player
+    const toPx = player.group.position.x - catPos.x;
+    const toPz = player.group.position.z - catPos.z;
+    const toPlayerYaw = Math.atan2(toPx, toPz);
+    catCompanion.group.rotation.y = smoothAngle(catCompanion.group.rotation.y, toPlayerYaw, Math.min(1, dt * 4));
   }
 
   const catStep = Math.min(1, catDist * 6);
@@ -2451,8 +2935,12 @@ function animate() {
   elapsed += dt;
   const t = elapsed;
 
-  // Player movement
+  // Player movement + physics
   updatePlayer(dt);
+  Physics.updateJump(dt, player.group, keys, playTone);
+  tickFootsteps(dt);
+  // Mini-games (coins, basketball, target dash)
+  MiniGames.tick(dt, t);
 
   // Player walk animation
   const walkCycle = playerMoving ? Math.sin(t * 10) * 0.35 : 0;
@@ -2467,14 +2955,18 @@ function animate() {
   // Name tag always faces camera
   player.nameTag.lookAt(camera.position);
 
-  // Third-person camera follows player smoothly
+  // Third-person camera follows player smoothly (spherical coords)
   const px = player.group.position.x, pz = player.group.position.z;
-  const targetCamX = px + Math.sin(camTheta) * CAM_DIST;
-  const targetCamZ = pz + Math.cos(camTheta) * CAM_DIST;
+  const py = player.group.position.y;
+  const hDist = camZoom * Math.cos(camPhi);
+  const vDist = camZoom * Math.sin(camPhi);
+  const targetCamX = px + Math.sin(camTheta) * hDist;
+  const targetCamY = py + vDist;
+  const targetCamZ = pz + Math.cos(camTheta) * hDist;
   camera.position.x += (targetCamX - camera.position.x) * 0.12;
-  camera.position.y += (CAM_HEIGHT  - camera.position.y) * 0.12;
+  camera.position.y += (targetCamY - camera.position.y) * 0.12;
   camera.position.z += (targetCamZ - camera.position.z) * 0.12;
-  camera.lookAt(px, 1.0, pz);
+  camera.lookAt(px, py + 1.0, pz);
 
   // Keep spherical in sync for anything still referencing it
   spherical.theta = camTheta;
@@ -2500,7 +2992,7 @@ function animate() {
   // NPC animations
   AGENTS.forEach((agent, i) => {
     const { head, eyes, eyeShines, mouth, lArmG, rArmG, lForeG, rForeG, glow, torso } = agentNPCs[agent.id];
-    const { screenMat } = agentDesks[agent.id];
+    const { screenMat, drawScreen } = agentDesks[agent.id];
     const state  = agentStates[agent.id];
     const profile = npcMotionProfiles[agent.id] || makeNpcMotionProfile(i);
     const off    = profile.phase;
@@ -2531,19 +3023,29 @@ function animate() {
 
     if (state === 'working') {
       parent.position.y = idleWave * (0.038 + profile.idleBobAmp * 1.5);
-      head.rotation.x = -0.22 + Math.sin(t * 2.6 + off) * 0.07;
-      head.rotation.y = glanceWave * (profile.glanceAmp + 0.05);
+      // Head tilted toward screen, glances at work occasionally
+      head.rotation.x = -0.28 + Math.sin(t * 2.6 + off) * 0.06;
+      head.rotation.y = Math.sin(t * 1.4 + off) * 0.18;
       head.rotation.z = Math.sin(t * 3.4 + off) * 0.03;
+      // Torso leans slightly forward while typing
       torso.rotation.z = Math.sin(t * 3.0 + off) * profile.shoulderSway;
-      torso.rotation.x = -0.05 + Math.sin(t * 2.0 + off) * 0.02;
-      lForeG.rotation.x = -0.62 + Math.sin(t * profile.typingSpeed + off) * (profile.typingAmp + 0.08);
-      rForeG.rotation.x = -0.62 + Math.sin(t * profile.typingSpeed + off + Math.PI) * (profile.typingAmp + 0.08);
-      lArmG.rotation.x = 0.56 + Math.sin(t * 0.9 + off) * profile.leanAmp;
-      rArmG.rotation.x = 0.56 + Math.sin(t * 0.9 + off + 0.45) * profile.leanAmp;
+      torso.rotation.x = -0.12 + Math.sin(t * 2.0 + off) * 0.03;
+      // Arms extended toward keyboard
+      lArmG.rotation.x = 0.62 + Math.sin(t * 0.8 + off) * profile.leanAmp;
+      rArmG.rotation.x = 0.62 + Math.sin(t * 0.8 + off + 0.45) * profile.leanAmp;
+      // Forearms: rapid alternating typing motion
+      const typeA = Math.sin(t * profile.typingSpeed + off);
+      const typeB = Math.sin(t * profile.typingSpeed + off + Math.PI);
+      lForeG.rotation.x = -0.58 + typeA * (profile.typingAmp + 0.14);
+      rForeG.rotation.x = -0.58 + typeB * (profile.typingAmp + 0.14);
+      lForeG.rotation.z =  0.05 + typeA * 0.06;
+      rForeG.rotation.z = -0.05 + typeB * 0.06;
       mouth.scale.x = 1 + Math.sin(t * 6.5 + off) * 0.12;
       mouth.scale.y = 0.88 + Math.sin(t * 5.9 + off + 0.8) * 0.14;
       glow.intensity = 0.7 + Math.sin(t * 7 + off) * 0.35;
-      screenMat.opacity = 0.34 + Math.sin(t * 5.4 + off) * 0.14;
+      screenMat.opacity = 0.9;
+      // Cursor blink on screen canvas every ~0.7s
+      if (drawScreen) drawScreen(agent.id, Math.floor(t * 1.4) % 2 === 0);
     } else if (state === 'done') {
       parent.position.y = Math.sin(t * 1.15 + off) * 0.02;
       head.rotation.x = -0.03 + Math.sin(t * 1.4 + off) * 0.03;
@@ -2555,7 +3057,8 @@ function animate() {
       mouth.scale.x = 1.25;
       mouth.scale.y = 0.72;
       glow.intensity = 0.45 + Math.sin(t * 3 + off) * 0.12;
-      screenMat.opacity = 0.24 + Math.sin(t * 2.2 + off) * 0.06;
+      screenMat.opacity = 0.75;
+      if (drawScreen) drawScreen(agent.id, false);
     } else if (state === 'error') {
       parent.position.y = Math.sin(t * 14 + off) * 0.07;
       head.rotation.x = Math.sin(t * 7.2 + off) * 0.05;
@@ -2569,7 +3072,7 @@ function animate() {
       mouth.scale.x = 0.8 + Math.sin(t * 16 + off) * 0.2;
       mouth.scale.y = 1.18 + Math.sin(t * 14 + off) * 0.2;
       glow.intensity = 0.95 + Math.sin(t * 18 + off) * 0.5;
-      screenMat.opacity = 0.42 + Math.sin(t * 18 + off) * 0.22;
+      screenMat.opacity = 0.85;
     } else {
       parent.position.y = idleWave * profile.idleBobAmp;
       head.rotation.x = -0.02 + Math.sin(t * profile.lookSpeed * 0.85 + off) * 0.04;
@@ -2582,7 +3085,7 @@ function animate() {
       mouth.scale.x = 1 + Math.sin(t * 0.9 + off) * 0.05;
       mouth.scale.y = 0.95 + Math.sin(t * 0.95 + off + 1.2) * 0.06;
       glow.intensity = 0.24 + Math.sin(t * 1.2 + off) * 0.05;
-      screenMat.opacity = 0.08 + Math.sin(t * 1.1 + off) * 0.02;
+      screenMat.opacity = 0.55;
     }
   });
 
@@ -2613,7 +3116,9 @@ function openNpcChat(agentId) {
   if (!meta) return;
   activeNpcId = agentId;
   unlockSfx();
-  playTone(560, 0.05, { type: 'triangle', volume: 0.045, endFreq: 700 });
+  // Soft pop open
+  playTone(680, 0.03, { type: 'sine', volume: 0.05, endFreq: 820 });
+  setTimeout(() => playTone(820, 0.04, { type: 'sine', volume: 0.035, endFreq: 960 }), 35);
 
   document.getElementById('npc-chat-avatar').textContent = meta.emoji;
   document.getElementById('npc-chat-avatar').style.background = meta.color + '22';
@@ -2657,26 +3162,70 @@ async function sendNpcQuestion() {
 
   const sendBtn = document.getElementById('npc-chat-send');
   sendBtn.disabled = true;
-  const thinking = addChatMsg('Thinking...', 'thinking');
+
+  // Streaming bubble — starts empty, tokens append in real time
+  const hist = document.getElementById('npc-chat-history');
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-msg npc';
+  hist.appendChild(bubble);
+  hist.scrollTop = hist.scrollHeight;
+
+  let fullText = '';
+  let firstToken = true;
 
   try {
-    const res = await fetch(`${API_BASE}/npc_chat`, {
+    const res = await fetch(`${API_BASE}/npc_chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ npc_id: activeNpcId, question: q })
     });
-    const data = await res.json();
-    thinking.remove();
-    if (data.reply) {
-      addChatMsg(data.reply, 'npc');
-      playTone(620, 0.06, { type: 'sine', volume: 0.045, endFreq: 500 });
-      updateThoughtBubble(activeNpcId, data.reply.slice(0, 50));
-    } else {
-      addChatMsg('(Server error: ' + (data.error || 'unknown') + ')', 'thinking');
+
+    if (!res.ok) {
+      bubble.className = 'chat-msg thinking';
+      bubble.textContent = `Server error ${res.status}`;
+      sendBtn.disabled = false;
+      input.focus();
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.startsWith('data: ') ? part.slice(6) : part;
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.error) {
+          bubble.className = 'chat-msg thinking';
+          bubble.textContent = ev.error;
+          break;
+        }
+        if (ev.token) {
+          if (firstToken) {
+            playTone(560, 0.05, { type: 'triangle', volume: 0.04, endFreq: 680 });
+            firstToken = false;
+          }
+          fullText += ev.token;
+          bubble.textContent = fullText;
+          hist.scrollTop = hist.scrollHeight;
+        }
+        if (ev.done && fullText) {
+          playTone(620, 0.07, { type: 'sine', volume: 0.045, endFreq: 500 });
+          updateThoughtBubble(activeNpcId, fullText.slice(0, 50));
+        }
+      }
     }
   } catch (e) {
-    thinking.remove();
-    addChatMsg(`Cannot reach server. Run: ${BACKEND_RUN_HINT}`, 'thinking');
+    bubble.className = 'chat-msg thinking';
+    bubble.textContent = `Cannot reach server. Run: ${BACKEND_RUN_HINT}`;
   } finally {
     sendBtn.disabled = false;
     input.focus();
@@ -2722,6 +3271,9 @@ function checkNpcProximity() {
       interactPrompt.textContent = `Click ${nearest.name} to chat`;
       interactPrompt.classList.add('visible');
       lastNearNpc = nearest;
+      // Soft proximity pulse sound
+      playTone(520, 0.05, { type: 'sine', volume: 0.025, endFreq: 580 });
+      setTimeout(() => playTone(580, 0.04, { type: 'sine', volume: 0.018, endFreq: 640 }), 90);
     }
   } else {
     interactPrompt.classList.remove('visible');
@@ -2874,6 +3426,17 @@ function connectWS() {
       Object.entries(data.output).forEach(([type, content]) => {
         if (content) { const el = document.getElementById('text-' + type); if (el) el.textContent = content; }
       });
+      // Detect completed build on reconnect: all agents 'done' AND we have built code.
+      // Without this, hard-refreshing after a build leaves the launch/download buttons
+      // hidden because the build_complete event already fired before reconnect.
+      const allDone = Object.values(data.agents || {}).every(a => a.state === 'done');
+      const hasCode = !!(data.output && data.output.code);
+      if (allDone && hasCode && data.status !== 'building') {
+        setHud('done', 'COMPLETE');
+        document.getElementById('launch-btn').style.display = 'block';
+        document.getElementById('download-btn').style.display = 'block';
+        showBuildActions();
+      }
 
     } else if (event === 'agent_update') {
       const prev = agentStates[data.name];
@@ -2898,37 +3461,49 @@ function connectWS() {
       resetPipeline();
       document.getElementById('launch-btn').style.display = 'none';
       document.getElementById('download-btn').style.display = 'none';
+      hideBuildActions();
       const req = data.request.length > 38 ? data.request.slice(0,38) + '...' : data.request;
       setHud('building', 'BUILDING');
       unlockSfx();
       playBuildSfx('start');
+      startBuildMusic();
       startBuildLoopSfx();
+      MiniGames.start();
       document.getElementById('build-btn').disabled = true;
       showToast(`Build started: "${req}"`, 'working');
 
     } else if (event === 'build_complete') {
       const success = !(data && data.success === false);
       stopBuildLoopSfx();
+      stopBuildMusic();
       document.getElementById('build-btn').disabled = false;
 
       if (success) {
         setHud('done', 'COMPLETE');
         document.getElementById('launch-btn').style.display = 'block';
         document.getElementById('download-btn').style.display = 'block';
+        showBuildActions();
         playBuildSfx('complete');
         allCheer();
-        showToast('Build complete! Click "Test App" to run it.', 'complete');
+        MiniGames.stop();
+        setTimeout(startIdleMusic, 1200); // resume calm music after cheer
       } else {
         setHud('error', 'FAILED');
         document.getElementById('launch-btn').style.display = 'none';
         document.getElementById('download-btn').style.display = 'none';
+        hideBuildActions();
         playBuildSfx('error');
+        MiniGames.stop();
+        setTimeout(startIdleMusic, 1000);
       }
 
     } else if (event === 'build_error') {
       setHud('error', 'ERROR');
       stopBuildLoopSfx();
+      stopBuildMusic();
+      MiniGames.stop();
       playBuildSfx('error');
+      setTimeout(startIdleMusic, 1000);
       document.getElementById('build-btn').disabled = false;
       showToast('Build failed: ' + data.error.slice(0,45), 'error');
     }
@@ -2952,9 +3527,9 @@ async function startBuild() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: req })
     });
-    if (!res.ok) alert(`Server error — run: ${BACKEND_RUN_HINT}`);
+    if (!res.ok) showToast(`Server error — run: ${BACKEND_RUN_HINT}`, 'error');
   } catch (e) {
-    alert(`Cannot connect.\nRun: ${BACKEND_RUN_HINT}`);
+    showToast(`Cannot connect — run: ${BACKEND_RUN_HINT}`, 'error');
   }
 }
 
@@ -2962,50 +3537,205 @@ document.getElementById('build-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') startBuild();
 });
 
+function showBuildActions() {
+  const el = document.getElementById('build-actions');
+  if (el) el.classList.add('visible');
+}
+
+function hideBuildActions() {
+  const el = document.getElementById('build-actions');
+  if (el) el.classList.remove('visible');
+}
+
+let _currentAppUrl = '';
+
+function mountAppPreview(url, msg) {
+  _currentAppUrl = url;
+  const termBox = document.getElementById('terminal-box');
+  const frame   = document.getElementById('app-preview-frame');
+  const urlEl   = document.getElementById('app-preview-url');
+  const title   = document.getElementById('terminal-title');
+  termBox.classList.add('preview-mode');
+  urlEl.textContent = url;
+  if (title) title.textContent = '▶ ' + (msg || 'App is ready');
+  frame.src = url;
+}
+
+function reloadAppPreview() {
+  const frame = document.getElementById('app-preview-frame');
+  if (_currentAppUrl) frame.src = _currentAppUrl + (_currentAppUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+}
+
+function openAppInNewTab() {
+  if (!_currentAppUrl) return;
+  const opened = window.open(_currentAppUrl, '_blank', 'noopener,noreferrer');
+  if (!opened) window.location.href = _currentAppUrl;
+}
+
 async function launchApp() {
   unlockSfx();
-  playTone(660, 0.045, { type: 'triangle', volume: 0.05, endFreq: 520 });
+  playBuildSfx('start');
+
+  // Open terminal modal and show progress view immediately
+  const modal = document.getElementById('terminal-modal');
+  const termBox = document.getElementById('terminal-box');
+  const progressView = document.getElementById('launch-progress-view');
+  const termBody = document.getElementById('terminal-body');
+  const bar = document.getElementById('launch-progress-bar');
+  const stepLabel = document.getElementById('launch-step-label');
+  const stepsList = document.getElementById('launch-steps-list');
+  const rerunBtn = document.getElementById('rerun-btn');
+
+  // Reset progress UI
+  termBox.classList.remove('preview-mode');
+  progressView.style.display = 'flex';
+  termBody.style.display = 'none';
+  bar.style.width = '0%';
+  bar.style.background = 'linear-gradient(90deg, #0ea5e9, #6366f1)';
+  stepLabel.textContent = 'Preparing...';
+  stepsList.innerHTML = '';
+  rerunBtn.disabled = true;
+  modal.classList.add('open');
+
+  const stepItems = {};
+  function upsertStep(step, label, state) {
+    if (!stepItems[step]) {
+      const el = document.createElement('div');
+      el.className = 'launch-step-item';
+      el.innerHTML = `<span class="step-icon">◦</span><span>${label}</span>`;
+      stepsList.appendChild(el);
+      stepItems[step] = el;
+    }
+    const el = stepItems[step];
+    el.className = `launch-step-item ${state}`;
+    el.querySelector('.step-icon').textContent =
+      state === 'done' ? '✓' : state === 'error' ? '✗' : '▸';
+    el.querySelector('span:last-child').textContent = label;
+  }
 
   try {
-    const res = await fetch(`${API_BASE}/run`, {
-      method: 'POST'
-    });
-    const payload = await res.json().catch(() => ({}));
+    const res = await fetch(`${API_BASE}/run/stream`, { method: 'POST' });
+    if (!res.ok || !res.body) throw new Error('Server did not stream a response.');
 
-    if (!res.ok) {
-      const message = payload.error || 'Failed to launch app.';
-      const firstDetailLine = payload.details
-        ? String(payload.details).split(/\r?\n/).find(line => line.trim()) || ''
-        : '';
-      const details = firstDetailLine ? `\n${firstDetailLine.slice(0, 220)}` : '';
-      alert(`Could not run app.\n${message}${details}`);
-      return;
-    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
 
-    if (!payload.url) {
-      alert('App started, but no launch URL was returned.');
-      return;
-    }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
 
-    const summary = payload.summary || `I started your app at ${payload.url}.`;
-    const now = new Date().toLocaleTimeString([], { hour12: false });
-    addLog({ time: now, msg: `Run: ${summary}` });
-    showToast(summary, 'complete');
+      for (const part of parts) {
+        const line = part.startsWith('data: ') ? part.slice(6) : part.trim();
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
 
-    const opened = window.open(payload.url, '_blank', 'noopener,noreferrer');
-    if (!opened) {
-      // Fallback when popups are blocked.
-      window.location.href = payload.url;
-    } else {
-      const shortUrl = payload.url.length > 60 ? `${payload.url.slice(0, 57)}...` : payload.url;
-      showToast(`Opened app: ${shortUrl}`, 'done');
+        const pct = ev.pct ?? 0;
+        const msg = ev.msg || '';
+        const step = ev.step || 'step';
+
+        if (step === 'error') {
+          upsertStep(step, msg || 'Error', 'error');
+          bar.style.background = 'linear-gradient(90deg,#ef4444,#dc2626)';
+          stepLabel.textContent = 'Launch failed.';
+          playTone(300, 0.12, { type: 'sawtooth', volume: 0.06, endFreq: 180 });
+          // Show error in terminal body
+          progressView.style.display = 'none';
+          termBody.style.display = 'block';
+          termBody.innerHTML = `<span class="t-dim" style="color:var(--error)">${msg}</span>`;
+          rerunBtn.disabled = false;
+          return;
+        }
+
+        if (step === 'ready') {
+          upsertStep(step, msg || 'App is ready!', 'done');
+          bar.style.width = '100%';
+          stepLabel.textContent = 'App is ready!';
+          playTone(520, 0.08, { type: 'sine', volume: 0.07, endFreq: 660 });
+          const now = new Date().toLocaleTimeString([], { hour12: false });
+          addLog({ time: now, msg: `Run: ${msg}` });
+          showToast(msg || 'App is ready!', 'complete');
+          rerunBtn.disabled = false;
+          if (ev.url) {
+            mountAppPreview(ev.url, msg);
+          } else {
+            setTimeout(() => {
+              progressView.style.display = 'none';
+              termBody.style.display = 'block';
+              termBody.innerHTML = `<span class="t-dim" style="color:var(--success)">✓ ${msg}</span>`;
+            }, 800);
+          }
+          return;
+        }
+
+        // Normal progress step
+        upsertStep(step, msg, 'active');
+        // Mark all prior steps as done
+        let reachedCurrent = false;
+        for (const [k, el] of Object.entries(stepItems)) {
+          if (k === step) { reachedCurrent = true; continue; }
+          if (!reachedCurrent) el.className = 'launch-step-item done';
+        }
+        bar.style.width = `${pct}%`;
+        stepLabel.textContent = msg;
+        playTone(440 + pct * 2, 0.03, { type: 'sine', volume: 0.03 });
+      }
     }
   } catch (e) {
-    alert(`Cannot connect.\nRun: ${BACKEND_RUN_HINT}`);
+    progressView.style.display = 'none';
+    termBody.style.display = 'block';
+    termBody.innerHTML = `<span class="t-dim" style="color:var(--error)">Cannot connect to server.\n${BACKEND_RUN_HINT}</span>`;
+    rerunBtn.disabled = false;
   }
 }
 
 connectWS();
+
+// ── Jump input (Space) ───────────────────────────────
+window.addEventListener('keydown', e => {
+  if (isTypingContext()) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (Physics.playerOnGround) {
+      Physics.playerVY    = Physics.JUMP_FORCE;
+      Physics.playerOnGround = false;
+      playTone(260, 0.06, { type: 'sine', volume: 0.08, endFreq: 340 });
+    }
+  }
+  // P — start ping-pong when near the table
+  if (e.code === 'KeyP') {
+    if (MiniGames.nearPingPong && MiniGames.nearPingPong()) {
+      MiniGames.startPingPong();
+    } else {
+      showToast('Get closer to the ping-pong table first!', 'working');
+    }
+  }
+});
+
+// ── Wire up external modules ──────────────────────────
+
+// Initialise physics (builds obby platforms into scene)
+Physics.init(scene);
+
+// Initialise mini-games
+MiniGames.init({
+  scene,
+  player,
+  renderer,
+  physics: Physics,
+  keys,
+  playTone,
+  showToast,
+});
+
+// ── (old platform / mini-game code removed — see physics.js / minigames.js) ──
+
+
+
 </script>
 </body>
 </html>

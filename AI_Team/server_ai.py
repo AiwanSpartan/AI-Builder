@@ -24,7 +24,11 @@ def ollama_chat_with_timeout(model, messages, timeout_seconds):
 
     def _worker():
         try:
-            response = ollama.chat(model=model, messages=messages)
+            # keep_alive='15m' keeps each model resident in GPU memory long enough
+            # to survive the round-trip through other models in the pipeline,
+            # so re-used models (e.g. qwen2.5-coder:7b for both coder+tester)
+            # don't get evicted and forced to cold-load mid-build.
+            response = ollama.chat(model=model, messages=messages, keep_alive='15m')
             result_q.put(response)
         except Exception as exc:
             error_q.put(exc)

@@ -18,8 +18,8 @@ from urllib.request import Request, urlopen
 import ollama
 from flask import jsonify, make_response, request, send_file
 
-from server_ai import clamp_text, try_repair_code, validate_generated_code
-from server_config import BASE_DIR, BUILDS_DIR, MAX_AUTO_REPAIR_ATTEMPTS, MODELS
+from server_ai import clamp_text, extract_code, try_repair_code, validate_generated_code
+from server_config import BASE_DIR, BUILDS_DIR, MAX_AUTO_REPAIR_ATTEMPTS, MODELS, NPC_CHAT_MODEL
 from server_io import (
     create_project_bundle,
     ensure_generated_templates_for_project,
@@ -48,13 +48,29 @@ APP_RUNTIME_PORT_END = 5699
 APP_RUNTIME_START_TIMEOUT_SECONDS = 12
 NPC_MAX_REPLY_SENTENCES = 2
 NPC_MAX_REPLY_CHARS = 180
-WEB_SEARCH_TIMEOUT_SECONDS = 4
-WEB_SEARCH_MAX_SNIPPETS = 4
+WEB_SEARCH_TIMEOUT_SECONDS = 2
+WEB_SEARCH_MAX_SNIPPETS = 2
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _SMALLTALK_RE = re.compile(
     r"^(?:\s*)(hi|hello|hey|hey there|yo|sup|what'?s up|hii+|heyy+)(?:[\s!,.?]*)$",
     flags=re.IGNORECASE,
 )
+_FACTUAL_RE = re.compile(
+    r'\b(what is|what are|who is|who are|when did|when is|where is|where are|'
+    r'define|explain|how does|how do|why does|why is|latest|current|news|'
+    r'tell me about|can you tell|do you know|fact about|history of)\b',
+    flags=re.IGNORECASE,
+)
+
+def _needs_web_search(question):
+    """Return True only for questions that look factual/lookup — skip for smalltalk."""
+    q = question.strip()
+    if not q or len(q) < 8:
+        return False
+    if _SMALLTALK_RE.match(q):
+        return False
+    return bool(_FACTUAL_RE.search(q))
+
 _NO_ANSWER_MARKERS = (
     "i do not know",
     "i don't know",
@@ -212,17 +228,70 @@ def _start_runtime_process(project_dir, main_file, bind_host, port, log_path):
         )
 
 
+_HTML_FENCE_RE = re.compile(r"```(?:html)?\s*([\s\S]*?)```", re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+_HTML_START_RE = re.compile(r"<!doctype\s+html|<html[\s>]", re.IGNORECASE)
+
+
+def _llm_improve_template(source, template_path):
+    """Background: ask LLM to write a better HTML template and save it if valid."""
+    prompt = (
+        "You are writing templates/index.html for a Flask web app.\n"
+        "Output ONLY the complete HTML file starting with <!doctype html>.\n"
+        "No explanation, no <think> tags, no markdown fences, no text before the HTML.\n"
+        "Requirements:\n"
+        "- Vanilla HTML5 with inline CSS and JS fetch() calls matching the Flask routes.\n"
+        "- Modern dark theme (dark navy background, indigo/purple accents).\n"
+        "- Working CRUD UI: form to add items, list to display them, delete buttons.\n\n"
+        f"Flask source:\n```python\n{source[:3000]}\n```\n\n"
+        "<!doctype html>"
+    )
+    try:
+        resp = ollama.chat(
+            model="qwen2.5-coder:7b",
+            messages=[{"role": "user", "content": prompt}],
+            options={"num_predict": 2400, "temperature": 0.15},
+            keep_alive="5m",
+        )
+        raw = (resp.get("message", {}).get("content", "") or "").strip()
+        # Strip <think>...</think> blocks (deepseek-r1 style)
+        raw = _THINK_TAG_RE.sub("", raw).strip()
+        # Strip markdown fences
+        fence_match = _HTML_FENCE_RE.search(raw)
+        if fence_match:
+            raw = fence_match.group(1).strip()
+        # Find the HTML doctype/root element anywhere in the response
+        start = _HTML_START_RE.search(raw)
+        if start:
+            html_text = raw[start.start():]
+            # Prepend doctype if model continued after our "<!doctype html>" primer
+            if not html_text.lower().startswith("<!doctype"):
+                html_text = "<!doctype html>\n" + html_text
+            with open(template_path, "w", encoding="utf-8") as _fh:
+                _fh.write(html_text)
+            log(f"[RUN] LLM-improved template saved to {template_path}")
+            return
+        log("[RUN] LLM output contained no HTML — keeping smart fallback template")
+    except Exception as exc:
+        log(f"[RUN] LLM template improvement failed: {exc}")
+
+
 def _ensure_index_template_for_flask(project_dir, source):
     result = ensure_generated_templates_for_project(project_dir, source)
     status = result.get("status")
+    kind   = result.get("kind", "")
+    path   = result.get("path", "")
     if status in {"generated", "upgraded", "copied"}:
-        kind = result.get("kind", "")
-        path = result.get("path", "")
         source_path = result.get("source", "")
         if source_path:
             log(f"[RUN] Template {status} ({kind}) at {path} from {source_path}")
         else:
             log(f"[RUN] Template {status} ({kind}) at {path}")
+        # Note: previously fired a background LLM template improvement here, but it
+        # produced a CRUD template whose fetch() calls didn't match the actual Flask
+        # routes (e.g. POST /api/items vs GET /get_weather), causing 405s. We now
+        # rely on smart_rescue rewriting the whole app to a single-file embedded
+        # HTML version when render_template() is detected — see _run_uses_external_templates.
 
 
 def _public_runtime_host_for_request(req):
@@ -230,6 +299,23 @@ def _public_runtime_host_for_request(req):
     if host in {"", "0.0.0.0", "::"}:
         return APP_RUNTIME_LOCAL_HEALTH_HOST
     return host
+
+
+_RENDER_TEMPLATE_CALL_RE = re.compile(r"render_template\s*\(\s*['\"]")
+_RENDER_TEMPLATE_STRING_CALL_RE = re.compile(r"render_template_string\s*\(")
+
+
+def _uses_external_templates(source):
+    """True if source calls render_template('foo.html') — the fragile path that
+    requires templates/ files whose fetch() calls must match Flask routes exactly.
+    render_template_string is fine because the HTML/JS lives in the same file as the routes."""
+    text = source or ""
+    if not _RENDER_TEMPLATE_CALL_RE.search(text):
+        return False
+    # If they ALSO use render_template_string, the embedded path is the primary one.
+    if _RENDER_TEMPLATE_STRING_CALL_RE.search(text):
+        return False
+    return True
 
 
 def _looks_like_web_app_source(source):
@@ -247,6 +333,51 @@ def _looks_like_web_app_source(source):
         return True
 
     return False
+
+
+# Maps Python import names to their PyPI install names where they differ.
+_IMPORT_TO_PYPI = {
+    'flask_login': 'flask-login',
+    'flask_sqlalchemy': 'flask-sqlalchemy',
+    'flask_wtf': 'flask-wtf',
+    'flask_migrate': 'flask-migrate',
+    'flask_mail': 'flask-mail',
+    'flask_bcrypt': 'flask-bcrypt',
+    'flask_jwt_extended': 'flask-jwt-extended',
+    'flask_restful': 'flask-restful',
+    'flask_cors': 'flask-cors',
+    'flask_socketio': 'flask-socketio',
+    'dotenv': 'python-dotenv',
+    'cv2': 'opencv-python',
+    'PIL': 'Pillow',
+    'sklearn': 'scikit-learn',
+    'bs4': 'beautifulsoup4',
+    'yaml': 'PyYAML',
+    'dateutil': 'python-dateutil',
+    'jwt': 'PyJWT',
+    'pymongo': 'pymongo',
+    'psycopg2': 'psycopg2-binary',
+    'sqlalchemy': 'SQLAlchemy',
+    'stripe': 'stripe',
+    'requests': 'requests',
+    'aiohttp': 'aiohttp',
+    'pydantic': 'pydantic',
+}
+
+
+def _pip_install_modules(module_names):
+    """Pip-install a list of import names, mapping to correct PyPI package names."""
+    packages = [_IMPORT_TO_PYPI.get(m, m.replace('_', '-')) for m in module_names]
+    if not packages:
+        return
+    log(f"[RUN] Auto-installing missing packages: {', '.join(packages)}")
+    try:
+        subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--quiet'] + packages,
+            timeout=120, capture_output=True,
+        )
+    except Exception as exc:
+        log(f"[RUN] pip install failed: {exc}")
 
 
 def _module_is_available_for_project(module_name, project_dir):
@@ -313,8 +444,113 @@ def _escape_html(text):
     )
 
 
-def _build_runtime_rescue_app(reason):
+_SMART_RESCUE_SYSTEM = """You generate complete single-file Python Flask web apps.
+Rules:
+- Output ONLY valid Python code, no markdown, no fences, no <think> tags, no prose.
+- ALWAYS start the file with these exact imports (you may add more stdlib imports below):
+    import os
+    from flask import Flask, render_template_string, request, jsonify
+- The file must define `app = Flask(__name__)` and end with `if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5600")))`.
+- Define route GET '/' that renders an HTML page using render_template_string.
+- Embed all HTML/CSS/JS inline (do NOT use templates/ folder).
+- Use only stdlib + flask. Never import packages that aren't flask/stdlib.
+- Every name you reference must be imported or defined — never use `os.`, `json.`, `re.`, etc. without importing it first.
+- The web UI must let the user actually USE the requested feature in the browser.
+- If the request is ambiguous, build a minimal but functional interpretation.
+- Handle bad input gracefully — never crash."""
+
+
+_STDLIB_AUTO_IMPORTS = ("os", "sys", "json", "re", "time", "math", "random",
+                        "datetime", "uuid", "hashlib", "base64", "io", "csv",
+                        "sqlite3", "urllib", "collections", "itertools", "functools")
+
+
+def _ensure_required_imports(source):
+    """Auto-prepend missing stdlib `import x` lines when the code references `x.`
+    but never imports it. Catches LLMs that use os.environ without `import os`."""
+    text = source or ""
+    if not text.strip():
+        return text
+
+    missing = []
+    for mod in _STDLIB_AUTO_IMPORTS:
+        used_re = re.compile(rf"(?<![\w.]){re.escape(mod)}\s*\.")
+        imported_re = re.compile(
+            rf"^\s*(?:import\s+{re.escape(mod)}(?:\s|$|,)|from\s+{re.escape(mod)}\b)",
+            re.MULTILINE,
+        )
+        if used_re.search(text) and not imported_re.search(text):
+            missing.append(mod)
+
+    if not missing:
+        return text
+
+    log(f"[RUN] Auto-adding missing stdlib imports: {', '.join(missing)}")
+    prefix = "\n".join(f"import {m}" for m in missing) + "\n"
+    return prefix + text
+
+
+def _smart_rescue_via_llm(user_request, original_source):
+    """Generate a fresh single-file Flask app from the user request via LLM.
+
+    Falls back to the static rescue page if the model can't produce valid code.
+    """
+    request_hint = clamp_text(user_request, 600).strip() or "build a small web app"
+    snippet = clamp_text(original_source or "", 1500).strip()
+    user_prompt = (
+        "Build a complete single-file Flask web app that fulfills this user request:\n"
+        f"\"\"\"{request_hint}\"\"\"\n\n"
+        + (
+            f"Reference (the previously generated code, possibly broken — extract intent, do not copy verbatim):\n"
+            f"```python\n{snippet}\n```\n\n"
+            if snippet else ""
+        )
+        + "Output the full Python file now. Begin with imports."
+    )
+    try:
+        resp = ollama.chat(
+            model=MODELS.get("coder", "qwen2.5-coder:7b"),
+            messages=[
+                {"role": "system", "content": _SMART_RESCUE_SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+            options={"num_predict": 2400, "temperature": 0.2},
+            keep_alive="5m",
+        )
+        raw = (resp.get("message", {}).get("content", "") or "")
+        candidate = extract_code(raw)
+    except Exception as exc:
+        log(f"[RUN] Smart rescue LLM call failed: {exc}")
+        return None
+
+    if not candidate.strip():
+        return None
+
+    candidate = _ensure_required_imports(candidate)
+
+    if validate_generated_code(candidate, runtime_check=False):
+        repair_ok, repaired, _ = try_repair_code(
+            code=candidate,
+            error_text=validate_generated_code(candidate, runtime_check=False) or "syntax error",
+            context_note="Repair this rescue Flask web app so it runs.",
+            attempts=2,
+            runtime_check=False,
+        )
+        if repair_ok:
+            candidate = repaired
+        else:
+            return None
+
+    if not _looks_like_web_app_source(candidate):
+        return None
+
+    log("[RUN] Smart rescue produced a fresh Flask app from user request.")
+    return candidate
+
+
+def _build_runtime_rescue_app(reason, user_request=""):
     safe_reason = _escape_html(clamp_text(reason, 320))
+    safe_request = _escape_html(clamp_text(user_request or "(no request recorded)", 320))
     return f'''"""Auto-generated runtime rescue app."""
 
 import os
@@ -366,6 +602,7 @@ def home():
     <main class=\"wrap\">
         <h1>Recovered Test App</h1>
         <p>This generated build could not be launched directly, so AI Builder created a runnable rescue app.</p>
+        <p>Original request: <code>{safe_request}</code></p>
         <p>Rebuild to get a full custom app. You can also edit <code>main.py</code> in this build folder.</p>
         <pre>{safe_reason}</pre>
     </main>
@@ -949,6 +1186,16 @@ def index():
     return response
 
 
+@app.route('/physics.js')
+def serve_physics_js():
+    return send_file(os.path.join(BASE_DIR, 'physics.js'), mimetype='application/javascript')
+
+
+@app.route('/minigames.js')
+def serve_minigames_js():
+    return send_file(os.path.join(BASE_DIR, 'minigames.js'), mimetype='application/javascript')
+
+
 @sock.route('/ws')
 def websocket(ws):
     clients.append(ws)
@@ -978,6 +1225,264 @@ def build():
     t.daemon = True
     t.start()
     return jsonify({"status": "started"})
+
+
+def _sse_event(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+@app.route('/run/stream', methods=['POST'])
+def run_app_stream():
+    """SSE endpoint: streams launch progress steps so the frontend can show a progress bar."""
+
+    # Capture request-context values before entering the generator (which runs outside context).
+    _captured_app_host = _public_runtime_host_for_request(request)
+
+    def generate():
+        nonlocal _captured_app_host
+        run_mode = "generated"
+
+        # ── Step 1: resolve project dir ──────────────────────────────────
+        yield _sse_event({"step": "resolve", "pct": 5, "msg": "Finding latest build..."})
+        project_dir = get_latest_project_dir()
+        if not (project_dir and os.path.exists(os.path.join(project_dir, "main.py"))):
+            legacy_file = get_latest_built_file()
+            if not legacy_file:
+                yield _sse_event({"step": "error", "pct": 0, "msg": "No built app found. Build something first."})
+                return
+
+            yield _sse_event({"step": "resolve", "pct": 10, "msg": "Converting legacy build..."})
+            try:
+                legacy_source = read_text(legacy_file)
+            except Exception as exc:
+                yield _sse_event({"step": "error", "pct": 0, "msg": f"Failed to read legacy build: {exc}"})
+                return
+
+            compile_error = validate_generated_code(legacy_source, runtime_check=False)
+            if compile_error:
+                repair_ok, repaired_code, repair_error = try_repair_code(
+                    code=legacy_source, error_text=compile_error,
+                    context_note="Repair legacy build before converting.",
+                    attempts=MAX_AUTO_REPAIR_ATTEMPTS, runtime_check=False,
+                )
+                if repair_ok:
+                    legacy_source = repaired_code
+                else:
+                    yield _sse_event({"step": "error", "pct": 0, "msg": f"Legacy build invalid: {clamp_text(repair_error or compile_error, 300)}"})
+                    return
+
+            bundle = create_project_bundle(
+                code=legacy_source, tests="", plan="Legacy conversion",
+                review="Converted for run mode.", user_request="legacy-conversion",
+            )
+            project_dir = bundle["project_dir"]
+
+        request_text = _read_build_request_text(project_dir)
+        main_file = os.path.join(project_dir, "main.py")
+        requirements_file = os.path.join(project_dir, "requirements.txt")
+
+        # ── Step 2: validate / auto-repair code ──────────────────────────
+        yield _sse_event({"step": "validate", "pct": 20, "msg": "Validating code..."})
+        try:
+            source = read_text(main_file)
+        except Exception as exc:
+            yield _sse_event({"step": "error", "pct": 0, "msg": f"Failed to read main.py: {exc}"})
+            return
+
+        compile_error = validate_generated_code(source, runtime_check=False)
+        if compile_error:
+            yield _sse_event({"step": "validate", "pct": 25, "msg": "Repairing code..."})
+            repair_ok, repaired_code, repair_error = try_repair_code(
+                code=source, error_text=compile_error,
+                context_note="Repair invalid project main.py before launching.",
+                attempts=MAX_AUTO_REPAIR_ATTEMPTS, runtime_check=False,
+            )
+            if repair_ok:
+                saved = save_repaired_project_main(project_dir, repaired_code)
+                source = repaired_code
+                main_file = saved["main_file"]
+            else:
+                yield _sse_event({"step": "error", "pct": 0, "msg": f"Code invalid and repair failed: {clamp_text(repair_error or compile_error, 300)}"})
+                return
+
+        if _is_calculator_request(request_text):
+            calc_gap = _calculator_feature_gap(source)
+            if calc_gap:
+                yield _sse_event({"step": "validate", "pct": 30, "msg": "Fixing calculator app..."})
+                repair_ok, repaired_code, repair_error = try_repair_code(
+                    code=source, error_text=calc_gap,
+                    context_note="Repair into a working calculator web app.",
+                    attempts=MAX_AUTO_REPAIR_ATTEMPTS, runtime_check=False,
+                )
+                if repair_ok and not _calculator_feature_gap(repaired_code):
+                    saved = save_repaired_project_main(project_dir, repaired_code)
+                    source = repaired_code
+                    main_file = saved["main_file"]
+                    run_mode = "calculator_repaired"
+                else:
+                    rescue_code = _build_runtime_calculator_app()
+                    saved = save_repaired_project_main(project_dir, rescue_code)
+                    source = rescue_code
+                    main_file = saved["main_file"]
+                    run_mode = "calculator_rescue"
+
+        # Auto-install any missing imports before shape validation so they don't
+        # incorrectly trigger rescue mode.
+        pre_missing = _missing_import_modules(source, project_dir)
+        if pre_missing:
+            yield _sse_event({"step": "deps", "pct": 38, "msg": f"Installing: {', '.join(pre_missing[:5])}..."})
+            _pip_install_modules(pre_missing)
+
+        shape_error = _detect_runtime_shape_error(source, project_dir)
+        if shape_error:
+            yield _sse_event({"step": "validate", "pct": 42, "msg": "Adapting to web app..."})
+            repair_ok, repaired_code, repair_error = try_repair_code(
+                code=source, error_text=shape_error,
+                context_note=(
+                    f"Convert into a runnable single-file Flask web app for the user request: "
+                    f"\"{clamp_text(request_text, 400)}\". Define route GET '/' that renders an HTML UI "
+                    f"using render_template_string, and end with app.run() reading PORT env var."
+                ),
+                attempts=MAX_AUTO_REPAIR_ATTEMPTS, runtime_check=False,
+            )
+            if repair_ok and not _detect_runtime_shape_error(repaired_code, project_dir):
+                saved = save_repaired_project_main(project_dir, repaired_code)
+                source = repaired_code
+                main_file = saved["main_file"]
+            else:
+                yield _sse_event({"step": "validate", "pct": 48, "msg": "Generating fresh web app from prompt..."})
+                smart_code = _smart_rescue_via_llm(request_text, source)
+                if smart_code and not _detect_runtime_shape_error(smart_code, project_dir):
+                    saved = save_repaired_project_main(project_dir, smart_code)
+                    source = smart_code
+                    main_file = saved["main_file"]
+                    run_mode = "smart_rescue"
+                else:
+                    rescue_code = _build_runtime_rescue_app(repair_error or shape_error, request_text)
+                    saved = save_repaired_project_main(project_dir, rescue_code)
+                    source = rescue_code
+                    main_file = saved["main_file"]
+                    run_mode = "rescue"
+
+        # Apps that call render_template('foo.html') need a templates/ file whose
+        # fetch() calls match the Flask routes exactly. The static template generator
+        # cannot guarantee that alignment for arbitrary prompts, so rewrite as a
+        # single-file render_template_string app where the HTML/JS and routes are
+        # generated together by the same LLM call.
+        if _uses_external_templates(source):
+            yield _sse_event({"step": "validate", "pct": 55,
+                              "msg": "Inlining UI to match routes..."})
+            inlined = _smart_rescue_via_llm(request_text, source)
+            if inlined and not _detect_runtime_shape_error(inlined, project_dir):
+                saved = save_repaired_project_main(project_dir, inlined)
+                source = inlined
+                main_file = saved["main_file"]
+                if run_mode == "generated":
+                    run_mode = "inlined"
+                # New source might bring new imports — install them now.
+                inline_missing = _missing_import_modules(source, project_dir)
+                if inline_missing:
+                    _pip_install_modules(inline_missing)
+
+        _ensure_index_template_for_flask(project_dir, source)
+
+        # ── Step 3: install dependencies ─────────────────────────────────
+        requirements_text = ""
+        if os.path.exists(requirements_file):
+            try:
+                requirements_text = read_text(requirements_file).strip()
+            except Exception:
+                requirements_text = ""
+
+        if requirements_text:
+            yield _sse_event({"step": "deps", "pct": 50, "msg": "Installing dependencies..."})
+            install_ok, install_details, dropped_reqs = _install_requirements_for_project(
+                project_dir=project_dir,
+                requirements_file=requirements_file,
+                requirements_text=requirements_text,
+            )
+            if not install_ok:
+                first_line = (install_details or "").split("\n")[0][:200]
+                yield _sse_event({"step": "error", "pct": 0, "msg": f"Dependency install failed: {first_line}"})
+                return
+
+        # ── Step 4: find port and launch ─────────────────────────────────
+        with _runtime_lock:
+            existing_proc = _runtime.get("process")
+            if (
+                _is_process_running(existing_proc)
+                and _runtime.get("project_dir") == project_dir
+                and _runtime.get("url")
+            ):
+                yield _sse_event({"step": "ready", "pct": 100,
+                                   "msg": f"App already running at {_runtime['url']}",
+                                   "url": _runtime["url"]})
+                return
+            if _is_process_running(existing_proc):
+                _stop_runtime_locked()
+
+        yield _sse_event({"step": "starting", "pct": 65, "msg": "Starting server..."})
+        port = _find_free_port(APP_RUNTIME_LOCAL_HEALTH_HOST, APP_RUNTIME_PORT_START, APP_RUNTIME_PORT_END)
+        if port is None:
+            yield _sse_event({"step": "error", "pct": 0, "msg": "No free port available."})
+            return
+
+        log_path = os.path.join(project_dir, "runtime.log")
+        try:
+            proc = _start_runtime_process(
+                project_dir=project_dir, main_file=main_file,
+                bind_host=APP_RUNTIME_BIND_HOST, port=port, log_path=log_path,
+            )
+        except Exception as exc:
+            yield _sse_event({"step": "error", "pct": 0, "msg": f"Failed to launch: {exc}"})
+            return
+
+        # ── Step 5: wait for HTTP port ────────────────────────────────────
+        yield _sse_event({"step": "starting", "pct": 80, "msg": "Waiting for app to respond..."})
+        if not _wait_for_http_port(APP_RUNTIME_LOCAL_HEALTH_HOST, port, APP_RUNTIME_START_TIMEOUT_SECONDS):
+            exit_code = proc.poll()
+            if _is_process_running(proc):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+            detail = _read_log_tail(log_path).strip().split("\n")[-1][:200] if log_path else ""
+            yield _sse_event({"step": "error", "pct": 0,
+                               "msg": f"App did not start in time (exit {exit_code}). {detail}"})
+            return
+
+        if not _is_process_running(proc):
+            detail = _read_log_tail(log_path).strip().split("\n")[-1][:200] if log_path else ""
+            yield _sse_event({"step": "error", "pct": 0, "msg": f"App exited right after startup. {detail}"})
+            return
+
+        # ── Done ──────────────────────────────────────────────────────────
+        app_host = _captured_app_host
+        app_url = f"http://{app_host}:{port}/"
+        app_label = _infer_app_label(request_text, source)
+        summary = _build_simple_run_summary(app_label, run_mode)
+
+        with _runtime_lock:
+            _runtime["process"] = proc
+            _runtime["project_dir"] = project_dir
+            _runtime["port"] = port
+            _runtime["url"] = app_url
+            _runtime["log_path"] = log_path
+            _runtime["mode"] = run_mode
+            _runtime["summary"] = summary
+            _runtime["app_label"] = app_label
+
+        log(f"[RUN] App launched at {app_url}")
+        yield _sse_event({"step": "ready", "pct": 100, "msg": summary, "url": app_url,
+                           "mode": run_mode, "app_label": app_label})
+
+    resp = make_response(generate())
+    resp.headers['Content-Type'] = 'text/event-stream'
+    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 
 
 @app.route('/run', methods=['POST'])
@@ -1391,6 +1896,80 @@ Rules:
             )
 
     return reply
+
+
+@app.route('/npc_chat/stream', methods=['POST'])
+def npc_chat_stream():
+    """SSE endpoint: streams NPC reply tokens as they arrive from Ollama."""
+    data = request.get_json(force=True)
+    npc_id = data.get('npc_id', '').lower()
+    question = data.get('question', '').strip()
+
+    if not question:
+        return jsonify({'error': 'Empty question'}), 400
+
+    if npc_id == 'guide':
+        persona = {
+            'model': MODELS.get('reviewer', 'mistral:7b'),
+            'system': (
+                "You are Orbit, a floating orb guide in an AI Office app builder. "
+                "Keep answers very short: 1-2 small sentences. Use easy words. "
+                "Speak in first person with I/me/my. Start with 'Orbit says:'. "
+                "Never say 'the user'. If uncertain, say 'I might be wrong.'."
+            ),
+            'signature': 'Orbit says:',
+            'name': 'Orbit',
+        }
+    elif npc_id in NPC_PERSONAS:
+        p = NPC_PERSONAS[npc_id]
+        persona = {
+            'model': p['model'],
+            'system': p['system'],
+            'signature': p.get('signature', ''),
+            'name': p['name'],
+        }
+    else:
+        return jsonify({'error': 'Unknown NPC'}), 400
+
+    # Only run web search for factual questions; skip entirely for smalltalk.
+    web_ctx = ""
+    if _needs_web_search(question):
+        web_context_box = [None]
+        def _fetch_web():
+            web_context_box[0] = _fetch_web_search_context(question)
+        web_thread = threading.Thread(target=_fetch_web, daemon=True)
+        web_thread.start()
+        web_thread.join(timeout=WEB_SEARCH_TIMEOUT_SECONDS)
+        web_ctx = web_context_box[0] or ""
+
+    user_prompt = _build_npc_user_prompt(question, web_context=web_ctx)
+
+    def generate():
+        try:
+            stream = ollama.chat(
+                model=NPC_CHAT_MODEL,
+                messages=[
+                    {'role': 'system', 'content': persona['system']},
+                    {'role': 'user', 'content': user_prompt},
+                ],
+                options={'num_predict': 120, 'temperature': 0.75},
+                keep_alive='10m',
+                stream=True,
+            )
+            for chunk in stream:
+                token = chunk.get('message', {}).get('content', '')
+                if token:
+                    yield f'data: {json.dumps({"token": token, "done": False})}\n\n'
+
+            yield f'data: {json.dumps({"token": "", "done": True})}\n\n'
+        except Exception as exc:
+            yield f'data: {json.dumps({"error": str(exc), "done": True})}\n\n'
+
+    resp = make_response(generate())
+    resp.headers['Content-Type'] = 'text/event-stream'
+    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 
 
 @app.route('/npc_chat', methods=['POST'])

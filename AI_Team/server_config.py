@@ -18,6 +18,11 @@ MODELS = {
     "reviewer": "mistral:7b",
 }
 
+# Single model used for all NPC chat — avoids GPU model-swap latency.
+# Use the smallest/fastest model you have installed.
+# Run: ollama pull qwen2.5:1.5b   for best speed, or leave as mistral:7b.
+NPC_CHAT_MODEL = "mistral:7b"
+
 MAX_DEBUG_FIX_ATTEMPTS = 5
 MAX_REBUILD_ATTEMPTS = 2
 MAX_AUTO_REPAIR_ATTEMPTS = 2
