@@ -35,6 +35,25 @@ def _looks_like_web_app(code):
     return False
 
 
+_INTERACTIVE_ACTION_VERBS = (
+    "add", "create", "make", "save", "update", "edit", "delete", "remove",
+    "submit", "send", "post", "search", "find", "filter", "sort", "calculate",
+    "compute", "convert", "translate", "generate", "track", "log", "vote",
+    "rate", "comment", "reply", "like", "share", "upload", "download",
+    "register", "login", "sign up", "sign in",
+)
+
+
+def _is_interactive_request(lowered_request):
+    """Heuristic: most user-facing apps are interactive. Default True unless the
+    prompt explicitly says it's a static page."""
+    if not lowered_request:
+        return True
+    if any(k in lowered_request for k in ("static", "landing page", "portfolio", "readme")):
+        return False
+    return True
+
+
 def _build_functionality_requirements_hint(user_request):
     req = (user_request or "").strip()
     lowered = req.lower()
@@ -45,6 +64,28 @@ def _build_functionality_requirements_hint(user_request):
         "- Include route '/' and interactive behavior that matches the request.",
         "- Do not ship a static 'welcome' page unless the request explicitly asks for static content.",
     ]
+
+    if _is_interactive_request(lowered):
+        hints.extend([
+            "- EVERY <button>, <form>, and clickable element in the HTML MUST be wired to a working "
+            "Flask route OR to inline JavaScript that updates the page. No dead buttons.",
+            "- EVERY fetch()/XHR call in the JavaScript MUST correspond to an @app.route in the same "
+            "file with a matching HTTP method (GET/POST/etc.). No 404s and no 405 Method Not Allowed.",
+            "- For any 'add/save/submit/create/update/delete' action implied by the prompt, include "
+            "BOTH the form/button in the HTML AND the matching POST/DELETE route that performs it.",
+            "- Persist state in-memory (a module-level list/dict) so the user can see their actions take effect "
+            "between page interactions within a single server run.",
+            "- After any action, re-render or fetch the updated state so the user sees the change immediately.",
+        ])
+
+    matched_verbs = [v for v in _INTERACTIVE_ACTION_VERBS if v in lowered]
+    if matched_verbs:
+        verbs_text = ", ".join(sorted(set(matched_verbs))[:6])
+        hints.append(
+            f"- The user explicitly asked to {verbs_text}. Each of these actions MUST have a working "
+            f"end-to-end implementation: a UI control to trigger it, a backend route to handle it, "
+            f"and visible feedback that it succeeded."
+        )
 
     if "calculator" in lowered:
         hints.extend(
@@ -58,6 +99,101 @@ def _build_functionality_requirements_hint(user_request):
     return "\n".join(hints)
 
 
+_FETCH_CALL_RE = re.compile(
+    r"""fetch\(\s*['"`]([^'"`]+)['"`]\s*(?:,\s*\{[^}]*method\s*:\s*['"]([A-Za-z]+)['"][^}]*\})?""",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROUTE_DECL_RE = re.compile(
+    r"""@app\.route\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?""",
+    re.IGNORECASE,
+)
+# Match any <form ...> opening tag — we'll parse attrs separately so attribute
+# order (action before method or vice versa) doesn't matter.
+_HTML_FORM_TAG_RE = re.compile(r"<form\b([^>]*)>", re.IGNORECASE)
+_FORM_ACTION_ATTR_RE = re.compile(r"""\baction\s*=\s*['"]([^'"]+)['"]""", re.IGNORECASE)
+_FORM_METHOD_ATTR_RE = re.compile(r"""\bmethod\s*=\s*['"]([A-Za-z]+)['"]""", re.IGNORECASE)
+
+
+def _strip_query(path):
+    return (path or "").split("?", 1)[0].split("#", 1)[0]
+
+
+def _route_path_matches(declared, called):
+    """True if a declared @app.route path covers the path the JS/form calls.
+
+    Handles trivial Flask path converters: declared '/items/<int:id>' covers
+    '/items/123' and dynamic '${...}' template paths."""
+    declared = _strip_query(declared)
+    called = _strip_query(called)
+    if not declared or not called:
+        return False
+    if declared == called:
+        return True
+    # Convert declared converters to a regex that accepts any segment.
+    pattern = re.sub(r"<[^>]+>", r"[^/]+", declared)
+    # Treat ${...} JS interpolation in the called URL as a wildcard segment too.
+    called_pattern = re.sub(r"\$\{[^}]+\}", r"[^/]+", called)
+    try:
+        return bool(re.fullmatch(pattern, called_pattern)) or bool(re.fullmatch(called_pattern, declared))
+    except re.error:
+        return False
+
+
+def _find_unrouted_calls(code):
+    """Return a list of frontend calls (URL, METHOD) that have no matching @app.route."""
+    routes = []
+    for m in _ROUTE_DECL_RE.finditer(code or ""):
+        path = m.group(1)
+        methods_text = (m.group(2) or "").upper()
+        methods = {x.strip().strip("'\"") for x in methods_text.split(",")} if methods_text else {"GET"}
+        methods = {m for m in methods if m}
+        routes.append((path, methods))
+
+    if not routes:
+        return []
+
+    def _has_route(url, method):
+        method = (method or "GET").upper()
+        url_path = _strip_query(url)
+        for r_path, r_methods in routes:
+            if _route_path_matches(r_path, url_path) and method in r_methods:
+                return True
+        return False
+
+    unrouted = []
+    seen = set()
+    for m in _FETCH_CALL_RE.finditer(code or ""):
+        url = m.group(1)
+        method = (m.group(2) or "GET").upper()
+        if url.startswith(("http://", "https://", "//")):
+            continue  # external URL, not our backend
+        key = (url, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not _has_route(url, method):
+            unrouted.append(key)
+
+    for tag_match in _HTML_FORM_TAG_RE.finditer(code or ""):
+        attrs = tag_match.group(1)
+        action_match = _FORM_ACTION_ATTR_RE.search(attrs)
+        if not action_match:
+            continue
+        url = action_match.group(1)
+        method_match = _FORM_METHOD_ATTR_RE.search(attrs)
+        method = (method_match.group(1) if method_match else "GET").upper()
+        if url.startswith(("http://", "https://", "//")):
+            continue
+        key = (url, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not _has_route(url, method):
+            unrouted.append(key)
+
+    return unrouted
+
+
 def _detect_request_feature_gap(user_request, code):
     lowered_req = (user_request or "").lower()
     lowered_code = (code or "").lower()
@@ -67,6 +203,38 @@ def _detect_request_feature_gap(user_request, code):
             "Generated code does not look like a runnable web app. "
             "It must expose route '/' and start a web server."
         )
+
+    # Catch the classic "buttons that don't do anything" failure mode: the HTML
+    # makes fetch()/form calls to URLs the Flask code never registered, which
+    # produces 404/405 at runtime even though the app technically launches.
+    unrouted = _find_unrouted_calls(code)
+    if unrouted:
+        sample = ", ".join(f"{m} {u}" for u, m in unrouted[:4])
+        return (
+            "UI/route mismatch: the HTML or JS calls endpoints that no @app.route "
+            f"handles ({sample}). Add the missing routes or fix the URLs so every "
+            "fetch()/form action hits a real handler with the right HTTP method."
+        )
+
+    # If the user asked to do something interactive but the app has no inputs/forms
+    # and no non-GET routes, the UI almost certainly can't perform the action.
+    if _is_interactive_request(lowered_req):
+        action_verbs_in_prompt = [v for v in _INTERACTIVE_ACTION_VERBS if v in lowered_req]
+        if action_verbs_in_prompt:
+            has_input_ui = any(
+                t in lowered_code for t in ("<input", "<textarea", "<select", "<form", "onclick", "addeventlistener")
+            )
+            has_mutating_route = bool(re.search(
+                r"methods\s*=\s*\[[^\]]*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
+                lowered_code,
+            ))
+            if not has_input_ui or not has_mutating_route:
+                return (
+                    "Interactive feature gap: the user asked to "
+                    f"{', '.join(sorted(set(action_verbs_in_prompt))[:4])}, but the app has no "
+                    "working input UI or no POST/PUT/DELETE route to perform those actions. "
+                    "Add a form/button in the HTML AND a matching mutating route."
+                )
 
     if "calculator" in lowered_req:
         has_arithmetic = (

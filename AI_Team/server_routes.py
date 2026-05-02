@@ -455,9 +455,20 @@ Rules:
 - Embed all HTML/CSS/JS inline (do NOT use templates/ folder).
 - Use only stdlib + flask. Never import packages that aren't flask/stdlib.
 - Every name you reference must be imported or defined — never use `os.`, `json.`, `re.`, etc. without importing it first.
+
+INTERACTIVITY (CRITICAL — most generated apps fail here):
 - The web UI must let the user actually USE the requested feature in the browser.
-- If the request is ambiguous, build a minimal but functional interpretation.
-- Handle bad input gracefully — never crash."""
+- EVERY <button>, <form>, and clickable element you put in the HTML MUST be wired to a working
+  Flask route via fetch() or form submit. No dead buttons, no buttons that only show alerts.
+- EVERY fetch() URL in the JavaScript MUST exactly match an @app.route path you defined in the
+  same file. Same path, same HTTP method (GET/POST/etc.). Mismatched routes cause 404/405 errors.
+- For any 'add/save/submit/create/update/delete' action implied by the prompt, you MUST include
+  BOTH the UI control AND the matching mutating Flask route (POST/PUT/DELETE).
+- Persist state in a module-level Python list/dict so user actions visibly take effect.
+- After a mutating action, return the updated state as JSON so the JS can re-render the page.
+
+If the request is ambiguous, build a minimal but functional interpretation.
+Handle bad input gracefully — never crash. Never use Python or JS that throws on empty input."""
 
 
 _STDLIB_AUTO_IMPORTS = ("os", "sys", "json", "re", "time", "math", "random",
@@ -543,6 +554,31 @@ def _smart_rescue_via_llm(user_request, original_source):
 
     if not _looks_like_web_app_source(candidate):
         return None
+
+    # Final binding check — does every fetch()/form action hit a real route?
+    # If not, the UI buttons would silently 404. Try one quick repair pass; if
+    # that still fails, return the candidate anyway (better than the static page)
+    # but log a warning.
+    try:
+        from server_pipeline import _find_unrouted_calls  # local import to avoid cycle
+        unrouted = _find_unrouted_calls(candidate)
+        if unrouted:
+            sample = ", ".join(f"{m} {u}" for u, m in unrouted[:3])
+            log(f"[RUN] Smart rescue produced unrouted UI calls: {sample}. Trying one repair pass.")
+            repair_ok, repaired, _ = try_repair_code(
+                code=candidate,
+                error_text=(
+                    f"The generated app's UI calls these endpoints that have no matching @app.route: {sample}. "
+                    "Add the missing routes (with the correct HTTP methods) so every fetch()/form action works."
+                ),
+                context_note="Wire UI buttons/forms to real Flask routes so nothing 404s.",
+                attempts=1,
+                runtime_check=False,
+            )
+            if repair_ok and _looks_like_web_app_source(repaired):
+                candidate = _ensure_required_imports(repaired)
+    except Exception as exc:
+        log(f"[RUN] Smart rescue binding check skipped due to error: {exc}")
 
     log("[RUN] Smart rescue produced a fresh Flask app from user request.")
     return candidate
@@ -1383,6 +1419,15 @@ def run_app_stream():
                 inline_missing = _missing_import_modules(source, project_dir)
                 if inline_missing:
                     _pip_install_modules(inline_missing)
+
+        # Final stdlib-import safety net: catch LLM omissions like using
+        # os.environ without `import os`. NameError at startup would otherwise
+        # kill the launch ("App did not start in time. NameError: name 'os' ...").
+        fixed_source = _ensure_required_imports(source)
+        if fixed_source != source:
+            saved = save_repaired_project_main(project_dir, fixed_source)
+            source = fixed_source
+            main_file = saved["main_file"]
 
         _ensure_index_template_for_flask(project_dir, source)
 
