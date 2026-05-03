@@ -1,0 +1,3 @@
+Summary: {'routes_passed': 3, 'routes_total': 3, 'scenarios_passed': 3, 'scenarios_total': 3, 'response_valid_count': 3, 'response_total': 3}
+Confidence score: 100
+All checks passed; no repair needed.

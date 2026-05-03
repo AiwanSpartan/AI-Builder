@@ -202,6 +202,26 @@ body.no-webgl #canvas-container::after {
 #hud-status.error    { color: var(--error); border-color: rgba(239,68,68,0.3); }
 #hud-status.error    .s-dot { background: var(--error); }
 
+/* Build ETA badge — only visible while building. Placed to the LEFT of the
+   #hud-status pill so the COINS+GAMES panel (top:14px, right:14px) can't
+   cover it. */
+#hud-eta {
+  display: none;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  color: var(--accent);
+  padding: 5px 11px;
+  border: 1px solid rgba(14,165,233,0.3);
+  border-radius: 6px;
+  background: rgba(6,14,28,0.7);
+  margin-right: 4px;
+  min-width: 150px;
+  text-align: center;
+}
+#hud-eta.visible { display: inline-block; }
+
 @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.25} }
 
 /* ── Agent Cards ─────────────────────────────── */
@@ -1178,6 +1198,7 @@ body.no-webgl #canvas-container::after {
     </div>
   </div>
 
+  <div id="hud-eta" title="Estimated time remaining"></div>
   <div id="hud-status">
     <div class="s-dot"></div>
     <span id="hud-status-text">IDLE</span>
@@ -1402,6 +1423,8 @@ body.no-webgl #canvas-container::after {
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
 <script src="physics.js"></script>
 <script src="minigames.js"></script>
 <script>
@@ -1559,6 +1582,144 @@ const HAIR_COLORS = [0xff6b8a, 0x4ecdc4, 0xffe066, 0x9b59b6, 0x2ecc71];
 const npcRefs = {};
 const thoughtBubbles = {};
 
+// ── KayKit Adventurers GLTF character mapping ────────
+// Each agent gets a different fantasy adventurer model from
+// assets/KayKit_Adventurers_2.0_FREE/...gltf/. The procedural box
+// body in makeNPC() is the fallback shown until the GLTF arrives.
+const KAYKIT_BASE = 'assets/KayKit_Adventurers_2.0_FREE/KayKit_Adventurers_2.0_FREE/Characters/gltf';
+const KAYKIT_MODELS = {
+  architect: 'Mage',       // Bob — system design
+  coder:     'Knight',     // Nia — implementation
+  debugger:  'Barbarian',  // Rex — bug fixing
+  tester:    'Ranger',     // Zoe — QA
+  reviewer:  'Rogue',      // Max — code review
+};
+// Auto-scale every loaded KayKit model so its bounding-box height matches this
+// target. The procedural NPC tops out around y=1.85; we go a hair shorter so
+// the character fits naturally above the chair seat.
+const KAYKIT_TARGET_HEIGHT = 1.7;
+// Animation rigs from the pack — same skeleton as every Adventurer model.
+const KAYKIT_RIG_BASE = 'assets/KayKit_Adventurers_2.0_FREE/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium';
+const KAYKIT_RIG_GENERAL = `${KAYKIT_RIG_BASE}/Rig_Medium_General.glb`;
+
+const _gltfLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) ? new THREE.GLTFLoader() : null;
+const _kaykitCache = {};      // model name → promise resolving to GLTF scene
+const _kaykitMixers = [];     // active AnimationMixers, ticked each frame
+let _kaykitRigClipsPromise = null;  // promise resolving to AnimationClip[]
+
+function _loadKaykitModel(modelName) {
+  if (!_gltfLoader) return Promise.reject(new Error('GLTFLoader not loaded'));
+  if (_kaykitCache[modelName]) return _kaykitCache[modelName];
+  const url = `${KAYKIT_BASE}/${modelName}.glb`;
+  _kaykitCache[modelName] = new Promise((resolve, reject) => {
+    _gltfLoader.load(url, (gltf) => resolve(gltf), undefined, (err) => reject(err));
+  });
+  return _kaykitCache[modelName];
+}
+
+function _loadKaykitRigClips() {
+  if (!_gltfLoader) return Promise.resolve([]);
+  if (_kaykitRigClipsPromise) return _kaykitRigClipsPromise;
+  _kaykitRigClipsPromise = new Promise((resolve) => {
+    _gltfLoader.load(
+      KAYKIT_RIG_GENERAL,
+      (gltf) => resolve(gltf.animations || []),
+      undefined,
+      (err) => {
+        console.warn('[KayKit] Rig animations failed to load:', err);
+        resolve([]);
+      },
+    );
+  });
+  return _kaykitRigClipsPromise;
+}
+
+function _pickIdleClip(clips) {
+  if (!clips || !clips.length) return null;
+  // Prefer a clip with "Idle" or "Stand" in the name; fall back to the first.
+  const lower = (n) => (n || '').toLowerCase();
+  return (
+    clips.find(c => lower(c.name).includes('idle')) ||
+    clips.find(c => lower(c.name).includes('stand')) ||
+    clips[0]
+  );
+}
+
+function _attachKaykitTo(npcGroup, agent, proceduralParts, bodyHolder) {
+  const modelName = KAYKIT_MODELS[agent.id];
+  if (!modelName) return;
+  _loadKaykitModel(modelName).then((gltf) => {
+    // Clone so each agent gets an independent instance (same rig source can
+    // serve two agents — they need separate transforms and AnimationMixers).
+    // SkeletonUtils.clone is required for SkinnedMesh: a plain clone(true)
+    // produces a deep copy whose bones still point at the ORIGINAL skeleton
+    // (never added to the scene → world identity), so the GPU skinning would
+    // render the character at world (0,0,0) regardless of inst's transform.
+    const cloneFn = (THREE.SkeletonUtils && THREE.SkeletonUtils.clone)
+      ? THREE.SkeletonUtils.clone
+      : (src) => src.clone(true);
+    const inst = cloneFn(gltf.scene);
+
+    // Normalize size: many KayKit characters have nested armature scales that
+    // make a flat scale=1 render way too tall. Compute the actual rendered
+    // bounding box and rescale to a fixed target height.
+    let bbox = new THREE.Box3().setFromObject(inst);
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+    const scaleFactor = size.y > 0.001 ? (KAYKIT_TARGET_HEIGHT / size.y) : 1.0;
+    inst.scale.setScalar(scaleFactor);
+
+    // After scaling, recompute the box and lift the model so its feet rest on
+    // the floor (y = 0 in the NPC group's local space).
+    bbox = new THREE.Box3().setFromObject(inst);
+    inst.position.set(0, -bbox.min.y, 0);
+
+    // KayKit characters face -Z by default; the procedural NPC was authored to
+    // face +Z so it looks at the desk monitor. Spin 180° around Y so the new
+    // model matches.
+    inst.rotation.y = Math.PI;
+
+    // Tag every mesh for raycasting (click NPC → open chat).
+    inst.traverse((node) => {
+      if (node.isMesh || node.isSkinnedMesh) {
+        node.castShadow = true;
+        node.receiveShadow = false;
+        node.userData.agentId = agent.id;
+      }
+    });
+
+    bodyHolder.add(inst);
+    proceduralParts.forEach(p => { if (p) p.visible = false; });
+
+    // Hook up an idle animation. Try the model's own clips first, then fall
+    // back to the shared Rig_Medium_General clips. Both share the rig so the
+    // mixer can drive bones either way.
+    const ownClips = gltf.animations || [];
+    const setupMixer = (clips) => {
+      const idle = _pickIdleClip(clips);
+      if (!idle) return;
+      try {
+        const mixer = new THREE.AnimationMixer(inst);
+        const action = mixer.clipAction(idle);
+        // Slight per-agent phase offset so all 5 don't breathe in sync.
+        action.time = (Math.random() * idle.duration);
+        action.play();
+        _kaykitMixers.push(mixer);
+      } catch (err) {
+        console.warn(`[KayKit] Could not bind idle clip for ${agent.id}:`, err);
+      }
+    };
+    if (ownClips.length) {
+      setupMixer(ownClips);
+    } else {
+      _loadKaykitRigClips().then(setupMixer);
+    }
+  }).catch((err) => {
+    console.warn(`[KayKit] Failed to load ${modelName} for ${agent.id}:`, err);
+    // Procedural body stays visible as the fallback — no further action needed.
+  });
+}
+
 function makeNPC(agent, skinColor, hairColor) {
   const g = new THREE.Group();
   const shirtMat = new THREE.MeshLambertMaterial({ color: agent.color });
@@ -1568,6 +1729,8 @@ function makeNPC(agent, skinColor, hairColor) {
   const pantsMat = new THREE.MeshLambertMaterial({ color: 0x1e2e50 });
   const eyes = [];
   const eyeShines = [];
+  // Procedural-body fallback parts. Hidden once the KayKit GLB loads.
+  const proceduralBody = [];
 
   // Chair seat
   const seat = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.09, 0.85), darkMat);
@@ -1583,26 +1746,32 @@ function makeNPC(agent, skinColor, hairColor) {
   [-0.08, 0.08].forEach(lx => {
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.28, 0.13), pantsMat);
     leg.position.set(lx, 0.79, 0.1); leg.castShadow = true; g.add(leg);
+    proceduralBody.push(leg);
   });
 
   // Torso — clean box shirt
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.38, 0.26), shirtMat);
   torso.position.set(0, 0.98, 0.06); torso.castShadow = true; g.add(torso);
+  proceduralBody.push(torso);
 
   // Neck — small box
   const neck = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.10, 0.14), skinMat);
   neck.position.set(0, 1.22, 0.04); g.add(neck);
+  proceduralBody.push(neck);
 
   // Head — box (Minecraft-style, simple & cute)
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.46, 0.46), skinMat);
   head.position.set(0, 1.52, 0.04); head.castShadow = true; g.add(head);
+  proceduralBody.push(head);
 
   // Hair — flat box cap on top
   const hair = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.14, 0.50), hairMat);
   hair.position.set(0, 1.78, 0.02); g.add(hair);
+  proceduralBody.push(hair);
   // Hair sides
   const hairFront = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.10, 0.08), hairMat);
   hairFront.position.set(0, 1.64, 0.27); g.add(hairFront);
+  proceduralBody.push(hairFront);
 
   // Eyes — flat quads on face
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111122 });
@@ -1613,17 +1782,20 @@ function makeNPC(agent, skinColor, hairColor) {
     eye.userData.baseY = 1.53;
     eyes.push(eye);
     g.add(eye);
+    proceduralBody.push(eye);
     const shine = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.02), shineMat);
     shine.position.set(ex + 0.02, 1.555, 0.29);
     shine.userData.baseY = 1.555;
     eyeShines.push(shine);
     g.add(shine);
+    proceduralBody.push(shine);
   });
 
   // Mouth — small flat box
   const mouthMat = new THREE.MeshBasicMaterial({ color: 0x993333 });
   const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), mouthMat);
   mouth.position.set(0, 1.47, 0.28); g.add(mouth);
+  proceduralBody.push(mouth);
 
   // Arms — box arms with elbow group for animation
   const lArmG = new THREE.Group();
@@ -1635,6 +1807,7 @@ function makeNPC(agent, skinColor, hairColor) {
   const lFore = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), skinMat);
   lFore.position.set(0, -0.14, 0); lForeG.add(lFore);
   lArmG.add(lForeG); g.add(lArmG);
+  proceduralBody.push(lArmG);
 
   const rArmG = new THREE.Group();
   rArmG.position.set(0.30, 1.10, 0.05);
@@ -1645,8 +1818,15 @@ function makeNPC(agent, skinColor, hairColor) {
   const rFore = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), skinMat);
   rFore.position.set(0, -0.14, 0); rForeG.add(rFore);
   rArmG.add(rForeG); g.add(rArmG);
+  proceduralBody.push(rArmG);
 
-  return { group: g, head, eyes, eyeShines, mouth, lArmG, rArmG, lForeG, rForeG, torso };
+  // Holder for the KayKit GLTF model. The GLB feet sit at y=0 inside the NPC
+  // group, matching the procedural body it replaces.
+  const bodyHolder = new THREE.Group();
+  g.add(bodyHolder);
+  _attachKaykitTo(g, agent, proceduralBody, bodyHolder);
+
+  return { group: g, head, eyes, eyeShines, mouth, lArmG, rArmG, lForeG, rForeG, torso, bodyHolder };
 }
 
 function makeDesk(agent) {
@@ -2344,32 +2524,33 @@ function clampFollowerTarget(target) {
 
 function makeFollowerCat() {
   const g = new THREE.Group();
+  const fallbackGroup = new THREE.Group();
   const furMat = new THREE.MeshLambertMaterial({ color: 0xd1945d });
   const furAltMat = new THREE.MeshLambertMaterial({ color: 0xa1663b });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.28, 0.34), furMat);
-  body.position.set(0, 0.23, 0); body.castShadow = true; g.add(body);
+  body.position.set(0, 0.23, 0); body.castShadow = true; fallbackGroup.add(body);
 
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.24, 0.24), furMat);
-  head.position.set(0.29, 0.29, 0); head.castShadow = true; g.add(head);
+  head.position.set(0.29, 0.29, 0); head.castShadow = true; fallbackGroup.add(head);
 
   const earL = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.11, 4), furAltMat);
-  earL.position.set(0.36, 0.44, -0.07); earL.rotation.z = -0.35; g.add(earL);
+  earL.position.set(0.36, 0.44, -0.07); earL.rotation.z = -0.35; fallbackGroup.add(earL);
   const earR = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.11, 4), furAltMat);
-  earR.position.set(0.36, 0.44, 0.07); earR.rotation.z = -0.35; g.add(earR);
+  earR.position.set(0.36, 0.44, 0.07); earR.rotation.z = -0.35; fallbackGroup.add(earR);
 
   const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.01), eyeMat);
-  eyeL.position.set(0.42, 0.31, -0.05); g.add(eyeL);
+  eyeL.position.set(0.42, 0.31, -0.05); fallbackGroup.add(eyeL);
   const eyeR = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.01), eyeMat);
-  eyeR.position.set(0.42, 0.31, 0.05); g.add(eyeR);
+  eyeR.position.set(0.42, 0.31, 0.05); fallbackGroup.add(eyeR);
 
   const tailPivot = new THREE.Group();
   tailPivot.position.set(-0.27, 0.31, 0);
   const tail = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.3, 0.07), furAltMat);
   tail.position.set(-0.02, 0.14, 0); tail.castShadow = true;
   tailPivot.add(tail);
-  g.add(tailPivot);
+  fallbackGroup.add(tailPivot);
 
   const paws = [];
   [[0.14, -0.11], [0.14, 0.11], [-0.1, -0.11], [-0.1, 0.11]].forEach(([x, z]) => {
@@ -2377,8 +2558,47 @@ function makeFollowerCat() {
     paw.position.set(x, 0.1, z);
     paw.castShadow = true;
     paws.push(paw);
-    g.add(paw);
+    fallbackGroup.add(paw);
   });
+
+  g.add(fallbackGroup);
+
+  // Prefer a real low-poly cat model when available, while keeping procedural
+  // fallback geometry for missing asset / loader failures.
+  if (_gltfLoader) {
+    _gltfLoader.load(
+      'assets/low_poly_cat.glb',
+      (gltf) => {
+        const catModel = (THREE.SkeletonUtils && THREE.SkeletonUtils.clone)
+          ? THREE.SkeletonUtils.clone(gltf.scene)
+          : gltf.scene.clone(true);
+        catModel.traverse((obj) => {
+          if (obj.isMesh) {
+            obj.castShadow = true;
+            obj.receiveShadow = true;
+          }
+        });
+
+        const bbox = new THREE.Box3().setFromObject(catModel);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const targetHeight = 0.62;
+        const scaleFactor = size.y > 0.001 ? (targetHeight / size.y) : 1;
+        catModel.scale.setScalar(scaleFactor);
+
+        const scaledBox = new THREE.Box3().setFromObject(catModel);
+        catModel.position.y = -scaledBox.min.y;
+        catModel.rotation.y = Math.PI / 2;
+
+        fallbackGroup.visible = false;
+        g.add(catModel);
+      },
+      undefined,
+      () => {
+        // Keep fallback cat mesh when the GLB cannot be loaded.
+      },
+    );
+  }
 
   const glow = new THREE.PointLight(0xffb36a, 0.2, 3);
   glow.position.set(0.05, 0.45, 0);
@@ -2897,12 +3117,16 @@ function updateCompanions(dt, t) {
 
   const catStep = Math.min(1, catDist * 6);
   catCompanion.walkPhase += dt * (2.2 + catStep * 8.5);
-  const pawSwing = Math.sin(catCompanion.walkPhase) * 0.45 * catStep;
-  catCompanion.paws[0].rotation.x = pawSwing;
-  catCompanion.paws[1].rotation.x = -pawSwing;
-  catCompanion.paws[2].rotation.x = -pawSwing;
-  catCompanion.paws[3].rotation.x = pawSwing;
-  catCompanion.tailPivot.rotation.z = 0.5 + Math.sin(t * 6.5) * (0.2 + catStep * 0.15);
+  if (catCompanion.paws && catCompanion.paws.length >= 4) {
+    const pawSwing = Math.sin(catCompanion.walkPhase) * 0.45 * catStep;
+    catCompanion.paws[0].rotation.x = pawSwing;
+    catCompanion.paws[1].rotation.x = -pawSwing;
+    catCompanion.paws[2].rotation.x = -pawSwing;
+    catCompanion.paws[3].rotation.x = pawSwing;
+  }
+  if (catCompanion.tailPivot) {
+    catCompanion.tailPivot.rotation.z = 0.5 + Math.sin(t * 6.5) * (0.2 + catStep * 0.15);
+  }
   catCompanion.group.position.y = Math.sin(t * 8 + catCompanion.walkPhase) * 0.015 * catStep;
   catCompanion.glow.intensity = 0.14 + Math.sin(t * 4.2) * 0.05;
 
@@ -2941,6 +3165,8 @@ function animate() {
   tickFootsteps(dt);
   // Mini-games (coins, basketball, target dash)
   MiniGames.tick(dt, t);
+  // Advance KayKit character idle animations
+  for (let i = 0; i < _kaykitMixers.length; i++) _kaykitMixers[i].update(dt);
 
   // Player walk animation
   const walkCycle = playerMoving ? Math.sin(t * 10) * 0.35 : 0;
@@ -3437,6 +3663,14 @@ function connectWS() {
         document.getElementById('download-btn').style.display = 'block';
         showBuildActions();
       }
+      // Build is mid-flight — resume the ETA countdown from the elapsed time
+      // we missed while disconnected.
+      if (data.status === 'building' && data.eta_seconds && data.started_at) {
+        setHud('building', 'BUILDING');
+        const elapsedSeconds = (Date.now() / 1000) - data.started_at;
+        const remaining = Math.max(15, Math.round(data.eta_seconds - elapsedSeconds));
+        startBuildEta(remaining);
+      }
 
     } else if (event === 'agent_update') {
       const prev = agentStates[data.name];
@@ -3457,6 +3691,13 @@ function connectWS() {
     } else if (event === 'log') {
       addLog(data);
 
+    } else if (event === 'scope_notice') {
+      // Backend narrowed the user's prompt before kicking off the pipeline.
+      // Surface a persistent toast so the user knows what's actually being built.
+      if (data && data.message) {
+        showToast(data.message, 'working');
+      }
+
     } else if (event === 'build_start') {
       resetPipeline();
       document.getElementById('launch-btn').style.display = 'none';
@@ -3464,18 +3705,23 @@ function connectWS() {
       hideBuildActions();
       const req = data.request.length > 38 ? data.request.slice(0,38) + '...' : data.request;
       setHud('building', 'BUILDING');
+      startBuildEta(data.eta_seconds || 0);
       unlockSfx();
       playBuildSfx('start');
       startBuildMusic();
       startBuildLoopSfx();
       MiniGames.start();
       document.getElementById('build-btn').disabled = true;
-      showToast(`Build started: "${req}"`, 'working');
+      const etaText = (data.eta_seconds && data.eta_seconds > 0)
+        ? ` — about ${Math.round(data.eta_seconds / 60)} min`
+        : '';
+      showToast(`Build started: "${req}"${etaText}`, 'working');
 
     } else if (event === 'build_complete') {
       const success = !(data && data.success === false);
       stopBuildLoopSfx();
       stopBuildMusic();
+      stopBuildEta();
       document.getElementById('build-btn').disabled = false;
 
       if (success) {
@@ -3501,6 +3747,7 @@ function connectWS() {
       setHud('error', 'ERROR');
       stopBuildLoopSfx();
       stopBuildMusic();
+      stopBuildEta();
       MiniGames.stop();
       playBuildSfx('error');
       setTimeout(startIdleMusic, 1000);
@@ -3527,10 +3774,61 @@ async function startBuild() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: req })
     });
-    if (!res.ok) showToast(`Server error — run: ${BACKEND_RUN_HINT}`, 'error');
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* not JSON */ }
+
+    if (res.status === 400 && body && body.scope === 'reject') {
+      // Out-of-scope request — put the prompt back in the input so the user
+      // can edit and resubmit easily, and show the suggestion long enough to read.
+      input.value = req;
+      showScopeRejectModal(body.error || 'That request is too broad for this builder.');
+      return;
+    }
+    if (!res.ok) {
+      showToast(`Server error — run: ${BACKEND_RUN_HINT}`, 'error');
+      return;
+    }
+    if (body && body.scope === 'narrow' && body.note) {
+      showToast(body.note, 'working');
+    }
   } catch (e) {
     showToast(`Cannot connect — run: ${BACKEND_RUN_HINT}`, 'error');
   }
+}
+
+function showScopeRejectModal(message) {
+  // Lightweight modal — built dynamically to avoid bloating the rest of the
+  // markup. Click the overlay or the button to dismiss.
+  let overlay = document.getElementById('scope-reject-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'scope-reject-overlay';
+  overlay.style.cssText = (
+    'position:fixed;inset:0;background:rgba(2,5,14,0.78);z-index:300;' +
+    'display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);'
+  );
+  const box = document.createElement('div');
+  box.style.cssText = (
+    'max-width:540px;background:linear-gradient(180deg,#0a1628,#050e1e);' +
+    'border:1px solid rgba(245,158,11,0.4);border-radius:14px;padding:22px 24px;' +
+    'box-shadow:0 30px 80px rgba(0,0,0,0.65),0 0 28px rgba(245,158,11,0.08);' +
+    'color:#ddeeff;font-family:var(--sans);'
+  );
+  box.innerHTML = (
+    '<div style="font-family:var(--mono);font-size:11px;letter-spacing:2px;color:#fbbf24;text-transform:uppercase;margin-bottom:10px;">⚠ Out of scope</div>' +
+    '<div style="font-size:14px;line-height:1.55;color:#cbd5e1;margin-bottom:16px;"></div>' +
+    '<div style="font-family:var(--mono);font-size:11px;color:#7dd3fc;line-height:1.6;margin-bottom:18px;">' +
+    'This builder reliably ships single-purpose Flask apps with up to 3 routes and in-memory state. ' +
+    'Try simpler prompts: <em>"a notes API with add/list/delete"</em>, <em>"a counter app"</em>, ' +
+    '<em>"a BMI calculator"</em>.' +
+    '</div>' +
+    '<button type="button" id="scope-reject-close" style="background:rgba(14,165,233,0.15);border:1px solid rgba(14,165,233,0.5);color:#7dd3fc;font-family:var(--sans);font-weight:600;font-size:12px;padding:8px 16px;border-radius:8px;cursor:pointer;letter-spacing:0.5px;">Got it</button>'
+  );
+  box.querySelector('div:nth-child(2)').textContent = message;
+  overlay.appendChild(box);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  box.querySelector('#scope-reject-close').addEventListener('click', () => overlay.remove());
+  document.body.appendChild(box.parentElement || overlay);
 }
 
 document.getElementById('build-input').addEventListener('keydown', e => {
@@ -3545,6 +3843,46 @@ function showBuildActions() {
 function hideBuildActions() {
   const el = document.getElementById('build-actions');
   if (el) el.classList.remove('visible');
+}
+
+// ── Build ETA badge ──────────────────────────────────
+let _etaTimer = null;
+
+function _formatEta(seconds) {
+  if (seconds <= 0) return 'finishing up...';
+  if (seconds < 60) return `~${seconds}s remaining`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return s ? `~${m}m ${s}s remaining` : `~${m}m remaining`;
+}
+
+function startBuildEta(totalSeconds) {
+  stopBuildEta();
+  if (!totalSeconds || totalSeconds <= 0) return;
+  const el = document.getElementById('hud-eta');
+  if (!el) return;
+  const startedAt = Date.now();
+  el.classList.add('visible');
+  el.textContent = _formatEta(totalSeconds);
+  _etaTimer = setInterval(() => {
+    const elapsed = (Date.now() - startedAt) / 1000;
+    // Don't show negatives — clamp at "finishing up..." so the badge never
+    // says nonsense if the build runs longer than the typical estimate.
+    const remaining = Math.max(0, Math.round(totalSeconds - elapsed));
+    el.textContent = _formatEta(remaining);
+  }, 1000);
+}
+
+function stopBuildEta() {
+  if (_etaTimer) {
+    clearInterval(_etaTimer);
+    _etaTimer = null;
+  }
+  const el = document.getElementById('hud-eta');
+  if (el) {
+    el.classList.remove('visible');
+    el.textContent = '';
+  }
 }
 
 let _currentAppUrl = '';

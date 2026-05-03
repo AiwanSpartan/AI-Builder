@@ -1,0 +1,76 @@
+name: Validate API
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start sample app
+        run: |
+          nohup python sample_app.py &
+          echo $! > server.pid
+
+      - name: Wait for server
+        run: |
+          for i in {1..20}; do
+            if curl -sSf http://localhost:8000/weather >/dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run repair loop
+        run: |
+          python repair_loop.py
+
+      - name: Check for repair prompts
+        id: check_prompts
+        run: |
+          if [ -d repair_prompts ] && [ "$(ls -A repair_prompts)" ]; then
+            echo "has_prompts=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_prompts=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run repair agent
+        if: steps.check_prompts.outputs.has_prompts == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python repair_agent.py
+
+      - name: Upload repair artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-artifacts
+          path: |
+            repair_prompts/**
+            repair_suggestions/**
+      - name: Run test runner and save reports
+        run: |
+          python run_tests.py
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: test_reports/**

@@ -73,3 +73,7 @@ def reset_build_state_for_new_request():
     }
     build_state["log"] = []
     build_state["output"] = {"plan": "", "code": "", "tests": "", "review": ""}
+    # Clear any stale ETA info from a previous build so a reconnect during
+    # idle doesn't show a stale countdown.
+    build_state.pop("started_at", None)
+    build_state.pop("eta_seconds", None)

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game</title>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);min-height:100vh;color:#f1f5f9}
+.wrap{max-width:720px;margin:0 auto;padding:40px 20px}
+h1{margin:0 0 6px;font-size:2rem;color:#f8fafc}
+.sub{margin:0 0 28px;color:#94a3b8;font-size:.95rem}
+.card{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:24px;margin-bottom:20px}
+.row{display:flex;gap:10px}
+input{flex:1;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:12px 16px;font-size:15px;background:rgba(255,255,255,.07);color:#f1f5f9;outline:none}
+input:focus{border-color:#6366f1}
+input::placeholder{color:#64748b}
+button{border:0;border-radius:10px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .15s}
+button:hover{opacity:.85}
+.btn-primary{background:#6366f1;color:#fff}
+.btn-danger{background:#ef4444;color:#fff;padding:6px 12px;font-size:13px}
+.btn-success{background:#22c55e;color:#fff;padding:6px 12px;font-size:13px}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);margin-bottom:8px}
+.item-text{flex:1;font-size:15px}
+.done-text{text-decoration:line-through;color:#64748b}
+.empty{color:#64748b;text-align:center;padding:24px}
+.status{margin-top:14px;min-height:20px;font-size:14px;color:#6366f1}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Game</h1>
+  <p class="sub" id="counter">0 items</p>
+  <div class="card">
+    <div class="row">
+      <input id="mainInput" type="text" placeholder="New game…" />
+      <button class="btn-primary" onclick="addItem()">Add</button>
+    </div>
+  </div>
+  <div class="card">
+    <ul id="itemList"><li class="empty">Loading…</li></ul>
+    <div id="status" class="status"></div>
+  </div>
+</main>
+<script>
+const LIST_URL='/game';
+const ADD_URL='/move';
+const FIELD='game';
+function setStatus(msg,err){const el=document.getElementById('status');el.textContent=msg;el.style.color=err?'#ef4444':'#6366f1';}
+async function api(url,opts){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...(opts||{})});const t=await r.text();let d;try{d=t?JSON.parse(t):{};}catch{d={_raw:t};}if(!r.ok)throw new Error(d.error||d.message||d._raw||('HTTP '+r.status));return d;}
+function getText(item){if(item==null)return'';if(typeof item!=='object')return String(item);return item.task||item.title||item.name||item.text||item.content||item.message||item.description||item.value||JSON.stringify(item);}
+function isDone(item){return typeof item==='object'&&item&&!!(item.done||item.completed||item.finished||item.checked);}
+function renderItems(data){
+  const ul=document.getElementById('itemList');ul.innerHTML='';
+  let entries=Array.isArray(data)?data.map((v,i)=>[String(i),v]):Object.entries(data||{});
+  document.getElementById('counter').textContent=entries.length+' item'+(entries.length===1?'':'s');
+  if(!entries.length){ul.innerHTML='<li class="empty">Nothing here yet — add your first item!</li>';return;}
+  for(const[id,item]of entries){
+    const li=document.createElement('li');
+    const done=isDone(item);
+    const span=document.createElement('span');span.className='item-text'+(done?' done-text':'');span.textContent=getText(item);
+    const t=document.createElement('button');t.className='btn-success';t.textContent=done?'Undo':'Done';t.onclick=()=>toggleItem(id,done);
+    const d=document.createElement('button');d.className='btn-danger';d.textContent='Delete';d.onclick=()=>deleteItem(id);
+    li.append(span,t,d);ul.appendChild(li);
+  }
+}
+async function loadItems(){try{renderItems(await api(LIST_URL));setStatus('');}catch(e){setStatus('Could not load: '+e.message,true);document.getElementById('itemList').innerHTML='<li class="empty">Load failed.</li>';}}
+async function addItem(){
+  const inp=document.getElementById('mainInput');const val=inp.value.trim();
+  if(!val){setStatus('Please enter something first.',true);return;}
+  try{await api(ADD_URL,{method:'POST',body:JSON.stringify({[FIELD]:val,completed:false})});inp.value='';await loadItems();setStatus('Added!');}
+  catch(e){setStatus('Add failed: '+e.message,true);}
+}
+async function toggleItem(id,wasDone){try{await api(LIST_URL+'/'+id,{method:'PUT',body:JSON.stringify({completed:!wasDone})});await loadItems();}catch(e){setStatus('Update failed: '+e.message,true);}}
+async function deleteItem(id){try{await api(LIST_URL+'/'+id,{method:'DELETE'});await loadItems();}catch(e){setStatus('Delete failed: '+e.message,true);}}
+document.getElementById('mainInput').addEventListener('keydown',e=>{if(e.key==='Enter')addItem();});
+loadItems();
+</script>
+</body>
+</html>

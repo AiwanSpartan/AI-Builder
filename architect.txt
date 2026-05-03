@@ -1,0 +1,2 @@
+- GET /weather - returns JSON {"temp": number, "condition": string}
+- GET /weather

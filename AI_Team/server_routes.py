@@ -30,9 +30,10 @@ from server_io import (
     save_repaired_project_main,
 )
 from server_personas import NPC_PERSONAS
-from server_pipeline import build_pipeline
+from server_pipeline import build_pipeline, classify_request_scope
 from server_state import (
     app,
+    broadcast,
     build_state,
     clients,
     log,
@@ -1232,6 +1233,34 @@ def serve_minigames_js():
     return send_file(os.path.join(BASE_DIR, 'minigames.js'), mimetype='application/javascript')
 
 
+_ASSET_MIMETYPES = {
+    '.glb': 'model/gltf-binary',
+    '.gltf': 'model/gltf+json',
+    '.bin': 'application/octet-stream',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.txt': 'text/plain; charset=utf-8',
+}
+
+
+@app.route('/assets/<path:filepath>')
+def serve_asset_file(filepath):
+    """Serve files from the assets/ folder so the Three.js GLTFLoader can fetch
+    GLB models, textures, and animations from the same origin as office.html."""
+    assets_root = os.path.join(BASE_DIR, 'assets')
+    full_path = os.path.normpath(os.path.join(assets_root, filepath))
+    # Reject any path that escapes the assets/ folder.
+    if not full_path.startswith(os.path.normpath(assets_root) + os.sep):
+        return ('Forbidden', 403)
+    if not os.path.isfile(full_path):
+        return ('Not Found', 404)
+    ext = os.path.splitext(full_path)[1].lower()
+    mime = _ASSET_MIMETYPES.get(ext, 'application/octet-stream')
+    return send_file(full_path, mimetype=mime)
+
+
 @sock.route('/ws')
 def websocket(ws):
     clients.append(ws)
@@ -1255,12 +1284,92 @@ def build():
     if not user_request:
         return jsonify({"error": "No request provided"}), 400
 
+    # Scope filter: keep the pipeline within its sweet spot (single-purpose
+    # Flask apps, ≤3 routes, in-memory state). See classify_request_scope().
+    verdict, processed_request, note = classify_request_scope(user_request)
+
+    if verdict == "reject":
+        log(f"[SCOPE] Rejected request: {note}")
+        return jsonify({
+            "error": note,
+            "scope": "reject",
+            "original": user_request,
+        }), 400
+
     reset_build_state_for_new_request()
 
-    t = threading.Thread(target=build_pipeline, args=(user_request,))
+    if verdict == "narrow":
+        log(f"[SCOPE] {note}")
+        # Tell the office UI we narrowed the scope so the user knows what we
+        # actually committed to building. Fire-and-forget — the pipeline will
+        # also broadcast its own build_start moments later.
+        broadcast("scope_notice", {
+            "kind": "narrow",
+            "message": note,
+            "original": user_request,
+        })
+
+    t = threading.Thread(target=build_pipeline, args=(processed_request,))
     t.daemon = True
     t.start()
-    return jsonify({"status": "started"})
+    return jsonify({
+        "status": "started",
+        "scope": verdict,
+        "note": note,
+    })
+
+
+@app.route('/refine', methods=['POST'])
+def refine():
+    """Apply a follow-up prompt to the latest build.
+
+    The user submits either an enhancement ("add a search box") or a fix
+    ("the delete button does nothing"). We load the previous project's main.py,
+    splice it into a composite prompt, and run it through the normal build
+    pipeline so it goes through smoke tests + polish like any fresh build.
+    """
+    data = request.json or {}
+    refinement = (data.get('prompt') or '').strip()
+    mode = (data.get('mode') or 'enhance').strip().lower()  # 'fix' | 'enhance'
+    if not refinement:
+        return jsonify({"error": "No refinement prompt provided"}), 400
+    if len(refinement) < 4:
+        return jsonify({"error": "Refinement prompt is too short."}), 400
+
+    project_dir = get_latest_project_dir()
+    if not (project_dir and os.path.exists(os.path.join(project_dir, "main.py"))):
+        return jsonify({"error": "No previous build to refine. Build something first."}), 400
+
+    try:
+        existing_code = read_text(os.path.join(project_dir, "main.py"))
+    except Exception as exc:
+        return jsonify({"error": f"Could not read previous build: {exc}"}), 500
+
+    # Read the original request so the architect/coder still has the user's
+    # high-level intent to work from when applying the refinement.
+    original_request = _read_build_request_text(project_dir) or "(unknown)"
+
+    intent_label = "FIX" if mode == "fix" else "ENHANCE"
+    composite_request = (
+        f"[{intent_label} REQUEST — iterating on a previous build, do NOT start from scratch]\n\n"
+        f"Original goal: {original_request}\n\n"
+        f"User's follow-up: {refinement}\n\n"
+        "Apply the follow-up to the existing code below. Preserve everything else "
+        "that already works. Output the full updated single-file Flask app.\n\n"
+        f"Existing code (latest version):\n```python\n{existing_code}\n```"
+    )
+
+    reset_build_state_for_new_request()
+    log(f"[REFINE] mode={mode}, prompt={refinement[:80]!r}")
+    broadcast("refine_notice", {
+        "mode": mode,
+        "message": f"Applying {mode}: {refinement[:80]}",
+    })
+
+    t = threading.Thread(target=build_pipeline, args=(composite_request,))
+    t.daemon = True
+    t.start()
+    return jsonify({"status": "started", "mode": mode})
 
 
 def _sse_event(data: dict) -> str:
