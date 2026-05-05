@@ -72,8 +72,13 @@ def run(base='http://localhost:8000', threshold=80):
             # attempt matching GET route
             get_path = r['path']
             post_path = r['path']
-            sample = {k: f"persist_{k}" for k in r.get('required_keys', [])}
-            pers = check_persistence(base, post_path, get_path, sample, match_key=(r.get('required_keys') or ['name'])[0])
+            req_keys = r.get('required_keys', [])
+            if not req_keys:
+                # heuristic default when architect didn't specify fields
+                sample = {'name': 'persist_name'}
+            else:
+                sample = {k: f"persist_{k}" for k in req_keys}
+            pers = check_persistence(base, post_path, get_path, sample, match_key=(req_keys or ['name'])[0])
             if not pers.get('ok'):
                 prompts.append({'route': f'PERSIST {post_path}', 'prompt': generate_debug_prompt(r, pers)})
 
@@ -111,4 +116,8 @@ def run(base='http://localhost:8000', threshold=80):
 
 
 if __name__ == '__main__':
-    raise SystemExit(run())
+    import sys
+    base = 'http://localhost:8000'
+    if len(sys.argv) > 1:
+        base = sys.argv[1]
+    raise SystemExit(run(base=base))

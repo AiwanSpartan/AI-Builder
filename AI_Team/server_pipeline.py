@@ -1,5 +1,6 @@
 """Multi-agent build pipeline orchestration."""
 
+import json
 import os
 import re
 import socket
@@ -129,6 +130,493 @@ _PLANNED_ROUTE_RE = re.compile(
 )
 
 
+# Architect output: a fenced ```json``` block (introduced by ROUTES_SPEC) that
+# contains the route contract. We extract it so the coder can implement it
+# verbatim and the smoke test can validate the implementation against it.
+_SPEC_BLOCK_RE = re.compile(
+    r"ROUTES_SPEC\s*```(?:json)?\s*([\s\S]*?)```",
+    re.IGNORECASE,
+)
+_TYPE_SAMPLES = {
+    "string": "sample text",
+    "str":    "sample text",
+    "int":    1,
+    "integer": 1,
+    "number": 1,
+    "float":  1.5,
+    "bool":   True,
+    "boolean": True,
+    "list":   ["a"],
+    "array":  ["a"],
+    "dict":   {"key": "value"},
+    "object": {"key": "value"},
+}
+
+
+def _extract_spec_from_plan(plan_text):
+    """Return the architect's parsed JSON spec, or None if missing/malformed.
+
+    Shape:
+      {"routes": [{"path", "method", "purpose", "body", "response"}, ...]}
+    """
+    if not plan_text:
+        return None
+    match = _SPEC_BLOCK_RE.search(plan_text)
+    raw = (match.group(1).strip() if match else "")
+    if not raw:
+        # Try to find any JSON object that has a top-level "routes" key.
+        for fence in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", plan_text):
+            candidate = fence.group(1).strip()
+            if '"routes"' in candidate:
+                raw = candidate
+                break
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        log(f"[SPEC] JSON parse failed: {exc}")
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("routes"), list):
+        return None
+    # Normalize.
+    cleaned_routes = []
+    for r in parsed["routes"]:
+        if not isinstance(r, dict):
+            continue
+        path = (r.get("path") or "").strip()
+        method = (r.get("method") or "").strip().upper()
+        if not path or not method:
+            continue
+        # Preserve tests only if they're a list of {input, expected} dicts.
+        raw_tests = r.get("tests")
+        cleaned_tests = []
+        if isinstance(raw_tests, list):
+            for t in raw_tests:
+                if isinstance(t, dict) and "expected" in t and isinstance(t.get("expected"), dict):
+                    cleaned_tests.append({
+                        "input":    t.get("input") if isinstance(t.get("input"), (dict, type(None))) else None,
+                        "expected": t["expected"],
+                    })
+        cleaned_routes.append({
+            "path":     path,
+            "method":   method,
+            "module":   (r.get("module") or "main").strip().lower().replace(" ", "_") or "main",
+            "purpose":  (r.get("purpose") or "").strip(),
+            "body":     r.get("body") if isinstance(r.get("body"), dict) else None,
+            "response": r.get("response") if isinstance(r.get("response"), dict) else None,
+            "tests":    cleaned_tests,
+        })
+    if not cleaned_routes:
+        return None
+    return {"routes": cleaned_routes}
+
+
+# Smoke-error type tags. The repair prompt builder uses these to phrase the
+# fix request precisely instead of dumping a wall of mixed errors on the model.
+ERR_ROUTE_MISSING    = "ROUTE_MISSING"
+ERR_METHOD_MISMATCH  = "METHOD_MISMATCH"
+ERR_SCHEMA_INVALID   = "SCHEMA_INVALID"
+ERR_LOGIC_ERROR      = "LOGIC_ERROR"
+ERR_PERSISTENCE_FAIL = "PERSISTENCE_FAIL"
+ERR_RUNTIME          = "RUNTIME"
+
+
+def _tag(code, message):
+    """Format a smoke error string with its failure-type tag."""
+    return f"[{code}] {message}"
+
+
+def _classify_smoke_error(tagged_message):
+    """Pull the leading [TYPE] tag back off a smoke-error string.
+    Returns (tag, body). Falls back to ERR_RUNTIME if the string is unlabeled."""
+    m = re.match(r"\[([A-Z_]+)\]\s*(.*)", tagged_message or "")
+    if not m:
+        return ERR_RUNTIME, (tagged_message or "")
+    return m.group(1), m.group(2)
+
+
+# Per-failure-type guidance the model receives when repairing. Keeping the
+# guidance class-specific is the whole point — generic "fix the app" prompts
+# are why the repair loop kept guessing.
+_REPAIR_GUIDANCE = {
+    ERR_ROUTE_MISSING: (
+        "ROUTE_MISSING — these routes are declared in the spec but have no "
+        "@app.route handler. Add one for each, with the EXACT path and a "
+        "matching `methods=[...]` argument. Don't rename anything."
+    ),
+    ERR_METHOD_MISMATCH: (
+        "METHOD_MISMATCH — the route exists but rejects the spec'd HTTP "
+        "method. Add the missing method to the existing handler's "
+        "`methods=[...]` list (e.g. methods=['GET', 'POST'])."
+    ),
+    ERR_SCHEMA_INVALID: (
+        "SCHEMA_INVALID — the response JSON shape doesn't match the spec. "
+        "Add the missing fields and make sure each value is the declared "
+        "type. Look at every jsonify(...) and verify the dict matches the "
+        "spec's `response` shape exactly."
+    ),
+    ERR_LOGIC_ERROR: (
+        "LOGIC_ERROR — the route returns the wrong VALUE for a known input. "
+        "Read the test cases below carefully and fix the implementation so "
+        "the actual computation produces the expected result."
+    ),
+    ERR_PERSISTENCE_FAIL: (
+        "PERSISTENCE_FAIL — POSTed data isn't visible in subsequent GETs. "
+        "Make sure the storage variable is at MODULE scope (not inside a "
+        "function), and that the POST handler appends/updates it before "
+        "returning. The GET handler must read the same module-level variable."
+    ),
+    ERR_RUNTIME: (
+        "RUNTIME — the app launches but a request crashes or never responds. "
+        "Read the message and fix the underlying Python/Flask issue."
+    ),
+}
+
+
+# Pulls "METHOD /path" out of any smoke-error message body so we can attribute
+# the failure to a module via the spec.
+_ROUTE_IN_MSG_RE = re.compile(
+    r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/\S+?)(?:[\s,;:]|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_route_from_message(message):
+    m = _ROUTE_IN_MSG_RE.search(message or "")
+    if not m:
+        return None, None
+    return m.group(1).upper(), m.group(2).rstrip(".,;:)")
+
+
+def _build_targeted_repair_prompt(smoke_errors, spec):
+    """Group smoke errors by MODULE and failure-type, then emit a scoped repair
+    prompt that names which modules to touch and which to leave alone.
+
+    Without scoping, repairs ripple — fixing posts can quietly break auth
+    because the model rewrites the whole file. The marker-aware coder output
+    plus this prompt let us tell the model: "only modify MODULE: posts."
+    """
+    # grouped = {module_name: {error_tag: [body, ...]}}
+    grouped = {}
+    untagged_module_errors = []  # errors we couldn't attribute to a module
+
+    for err in smoke_errors:
+        tag, body = _classify_smoke_error(err)
+        method, path = _extract_route_from_message(body)
+        if method and path:
+            module = _module_for_route(spec, method, path)
+        else:
+            module = None
+        if module:
+            grouped.setdefault(module, {}).setdefault(tag, []).append(body)
+        else:
+            untagged_module_errors.append((tag, body))
+
+    affected_modules = sorted(grouped.keys())
+
+    sections = ["The app launched but failed runtime checks. Fix every issue below."]
+
+    if affected_modules:
+        sections.append("")
+        sections.append(
+            f"AFFECTED MODULES: {', '.join(affected_modules)}\n"
+            "ONLY modify code inside the `# ===== MODULE: <name> =====` blocks "
+            "for those modules. Every OTHER module is working correctly — keep "
+            "its code byte-for-byte identical, including its markers, helpers, "
+            "and module-local state."
+        )
+
+    # Stable per-class ordering inside each module.
+    order = [
+        ERR_ROUTE_MISSING,
+        ERR_METHOD_MISMATCH,
+        ERR_SCHEMA_INVALID,
+        ERR_PERSISTENCE_FAIL,
+        ERR_LOGIC_ERROR,
+        ERR_RUNTIME,
+    ]
+
+    for module in affected_modules:
+        sections.append("")
+        sections.append(f"=== Failures in MODULE: {module} ===")
+        errs_by_tag = grouped[module]
+        for tag in order:
+            items = errs_by_tag.get(tag) or []
+            if not items:
+                continue
+            sections.append(_REPAIR_GUIDANCE.get(tag, ""))
+            for it in items[:5]:
+                sections.append(f"  - {it}")
+
+    if untagged_module_errors:
+        sections.append("")
+        sections.append("=== Other failures (could not attribute to a module) ===")
+        for tag, it in untagged_module_errors[:6]:
+            sections.append(f"  [{tag}] {it}")
+
+    if spec and spec.get("routes"):
+        spec_summary = ", ".join(
+            f"{r['method']} {r['path']} ({r.get('module','main')})"
+            for r in spec["routes"]
+        )
+        sections.append("")
+        sections.append(f"Spec contract (for reference): {spec_summary}")
+
+    sections.append("")
+    sections.append(
+        "Output the FULL fixed Python file. PRESERVE every `# ===== MODULE: ... =====` "
+        "and `# ===== END: ... =====` marker exactly. Do not delete, rename, or "
+        "merge module blocks."
+    )
+    return "\n".join(sections)
+
+
+def _matches_type(value, type_hint):
+    """Return True iff value structurally matches the declared spec type.
+
+    Accepts type_hint as either a primitive string ("int", "string", ...) or
+    a structured shape (dict for nested objects, list for arrays where the
+    item type is the first element)."""
+    if type_hint is None:
+        return value is None
+
+    # Structured shapes recurse.
+    if isinstance(type_hint, dict):
+        if not isinstance(value, dict):
+            return False
+        for k, sub_hint in type_hint.items():
+            if k == "_":
+                continue
+            if k not in value:
+                return False
+            if not _matches_type(value[k], sub_hint):
+                return False
+        return True
+
+    if isinstance(type_hint, list):
+        if not isinstance(value, list):
+            return False
+        if not type_hint:
+            return True  # untyped list — any contents OK
+        item_hint = type_hint[0]
+        return all(_matches_type(item, item_hint) for item in value)
+
+    # Primitive type names.
+    t = str(type_hint).strip().lower()
+    if t in ("string", "str"):
+        return isinstance(value, str)
+    if t in ("int", "integer"):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if t in ("float", "number"):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if t in ("bool", "boolean"):
+        return isinstance(value, bool)
+    if t in ("list", "array"):
+        return isinstance(value, list)
+    if t in ("dict", "object"):
+        return isinstance(value, dict)
+    if t in ("null", "none"):
+        return value is None
+    if t == "any":
+        return True
+    # Unknown type name — be lenient rather than blocking the build.
+    return True
+
+
+def _validate_response_shape(value, schema, path_prefix=""):
+    """Walk a response value against its declared schema and collect every
+    field-level mismatch as a list of human-readable strings.
+
+    Returns a list of strings (empty if everything matches)."""
+    errors = []
+    if schema is None:
+        return errors
+    # HTML-typed responses skip JSON validation entirely.
+    if isinstance(schema, dict) and schema.get("_") == "html":
+        return errors
+
+    if isinstance(schema, dict):
+        if not isinstance(value, dict):
+            errors.append(f"expected object at '{path_prefix or '<root>'}', got {type(value).__name__}")
+            return errors
+        for field, sub_hint in schema.items():
+            if field == "_":
+                continue
+            child_path = f"{path_prefix}.{field}" if path_prefix else field
+            if field not in value:
+                errors.append(f"missing field '{child_path}'")
+                continue
+            errors.extend(_validate_response_shape(value[field], sub_hint, child_path))
+        return errors
+
+    if isinstance(schema, list):
+        if not isinstance(value, list):
+            errors.append(f"expected array at '{path_prefix or '<root>'}', got {type(value).__name__}")
+            return errors
+        if not schema:
+            return errors
+        item_hint = schema[0]
+        for i, item in enumerate(value):
+            errors.extend(_validate_response_shape(item, item_hint, f"{path_prefix}[{i}]"))
+        return errors
+
+    # Primitive — flat type check.
+    if not _matches_type(value, schema):
+        errors.append(
+            f"field '{path_prefix or '<root>'}' expected {schema}, got "
+            f"{type(value).__name__} ({repr(value)[:40]})"
+        )
+    return errors
+
+
+def _expected_subset_matches(actual, expected, path_prefix=""):
+    """Like _validate_response_shape but compares concrete VALUES, not types.
+    Used to verify logic-assertion test cases. Returns list of mismatch strings.
+
+    Only requires keys in `expected` to be present in `actual` with equal value.
+    Extra keys in actual are fine (forward compatibility)."""
+    errors = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            errors.append(f"expected object at '{path_prefix or '<root>'}', got {type(actual).__name__}")
+            return errors
+        for k, sub_expected in expected.items():
+            child = f"{path_prefix}.{k}" if path_prefix else k
+            if k not in actual:
+                errors.append(f"missing '{child}' in response")
+                continue
+            errors.extend(_expected_subset_matches(actual[k], sub_expected, child))
+        return errors
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            errors.append(f"'{path_prefix or '<root>'}' expected list of len {len(expected) if isinstance(expected, list) else '?'}, got {actual!r}"[:200])
+            return errors
+        for i, e in enumerate(expected):
+            errors.extend(_expected_subset_matches(actual[i], e, f"{path_prefix}[{i}]"))
+        return errors
+    if actual != expected:
+        errors.append(f"'{path_prefix or '<root>'}' expected {expected!r}, got {actual!r}")
+    return errors
+
+
+def _build_sample_body(body_schema):
+    """Synthesize a JSON body that matches a {field: type} schema. Used to
+    smoke-test routes with realistic-shaped data instead of bare `{}`."""
+    if not isinstance(body_schema, dict):
+        return {}
+    sample = {}
+    for field, type_hint in body_schema.items():
+        if isinstance(type_hint, dict):
+            sample[field] = _build_sample_body(type_hint)
+        elif isinstance(type_hint, list):
+            sample[field] = ["a"]
+        else:
+            t = str(type_hint).lower().strip()
+            sample[field] = _TYPE_SAMPLES.get(t, f"sample_{field}")
+    return sample
+
+
+def _spec_render_for_prompt(spec):
+    """Render the spec as a compact JSON snippet suitable for injecting into
+    a coder prompt. Returns "" if the spec is empty."""
+    if not spec or not spec.get("routes"):
+        return ""
+    return json.dumps(spec, indent=2)
+
+
+def _format_route_key(method, path):
+    return f"{method.upper()} {path}"
+
+
+def _module_for_route(spec, method, path):
+    """Find which module a (METHOD, PATH) belongs to according to the spec.
+    Falls back to inferring from the URL prefix (e.g. /auth/login → 'auth')
+    when the spec doesn't have an explicit `module` field."""
+    method = (method or "").upper()
+    if spec and spec.get("routes"):
+        for r in spec["routes"]:
+            if r.get("method", "").upper() == method and r.get("path") == path:
+                return (r.get("module") or "main").strip().lower() or "main"
+    # Fallback: first path segment.
+    segs = [s for s in (path or "").split("/") if s]
+    return (segs[0].lower() if segs else "main")
+
+
+# Coder-emitted module markers in the generated source. Lets us attribute a
+# specific block of code to a module so repairs can be scoped to that block.
+_MODULE_MARKER_RE = re.compile(
+    r"#\s*=+\s*MODULE\s*:\s*([A-Za-z0-9_-]+)\s*=+\s*$",
+    re.MULTILINE,
+)
+
+
+def _split_code_by_module(code):
+    """Parse `# ===== MODULE: name =====` markers and return a dict mapping
+    module name → its block of code. Anything before the first marker is
+    stored under the synthetic key '__preamble__'.
+
+    If no markers are found, returns {'__preamble__': code} so callers don't
+    have to special-case unmodularised output."""
+    text = code or ""
+    markers = list(_MODULE_MARKER_RE.finditer(text))
+    if not markers:
+        return {"__preamble__": text}
+
+    blocks = {}
+    preamble = text[: markers[0].start()].rstrip()
+    if preamble:
+        blocks["__preamble__"] = preamble
+
+    for i, m in enumerate(markers):
+        name = m.group(1).lower()
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        body = text[m.end():end].strip("\n")
+        # Append (don't overwrite) so two markers with the same name merge.
+        if name in blocks:
+            blocks[name] = blocks[name] + "\n\n" + body
+        else:
+            blocks[name] = body
+    return blocks
+
+
+def _routes_in_code(code):
+    """Return [(method, path)] from @app.route declarations in the code.
+    Expands routes with multiple methods into one entry each."""
+    found = []
+    for m in _ROUTE_DECL_RE.finditer(code or ""):
+        path = m.group(1)
+        methods_text = (m.group(2) or "").upper()
+        if methods_text:
+            methods = {x.strip().strip("'\"") for x in methods_text.split(",") if x.strip()}
+        else:
+            methods = {"GET"}
+        for meth in methods:
+            if meth:
+                found.append((meth, path))
+    return found
+
+
+def _validate_routes_against_spec(code, spec):
+    """Compare implemented routes vs spec. Returns:
+      ([], [])                  — perfect match
+      (missing, extra)          — lists of formatted "METHOD /path" strings
+
+    `missing` = in spec but not in code (a 404 waiting to happen)
+    `extra`   = in code but not in spec (probably fine, but worth flagging)
+    """
+    if not spec or not spec.get("routes"):
+        return [], []
+    spec_keys = {(r["method"].upper(), r["path"]) for r in spec["routes"]}
+    code_keys = set(_routes_in_code(code))
+    missing = sorted(spec_keys - code_keys)
+    extra   = sorted(code_keys - spec_keys)
+    return (
+        [_format_route_key(m, p) for m, p in missing],
+        [_format_route_key(m, p) for m, p in extra],
+    )
+
+
 def _extract_routes_from_plan(plan_text):
     """Parse (METHOD, PATH) tuples out of the architect's plan.
 
@@ -175,13 +663,22 @@ def _wait_for_smoke_port(host, port, timeout_seconds):
     return False
 
 
-def _smoke_test_code(code, expected_routes=None, timeout_seconds=10):
+def _smoke_test_code(code, expected_routes=None, timeout_seconds=10, spec=None):
     """Subprocess-launch the generated code on a free port and verify '/' loads
-    plus every declared route responds with a non-{404,405} status.
+    plus every declared route responds.
 
-    Returns (ok: bool, errors: list[str]). 4xx other than 404/405 is treated
-    as success because the route exists — it just needs valid data we can't
-    fabricate without knowing the schema."""
+    When `spec` is provided (the architect's JSON contract), upgrades the smoke
+    test in three ways:
+      1. POST/PUT/PATCH bodies are synthesized from each route's `body` schema
+         instead of bare `{}`, so routes that 400-on-missing-fields don't get
+         falsely flagged.
+      2. Status codes get stricter checks: 5xx is always a failure, 4xx other
+         than 404/405 is allowed (route exists, just needs different data).
+      3. Persistence is verified: if the spec has a POST and a GET on the same
+         base path, the POST is sent and then the GET response is inspected to
+         confirm the new resource shows up — catches "data didn't persist".
+
+    Returns (ok: bool, errors: list[str])."""
     text = (code or "").strip()
     if not text:
         return False, ["Empty code."]
@@ -229,30 +726,183 @@ def _smoke_test_code(code, expected_routes=None, timeout_seconds=10):
             ).read()
         except urllib.error.HTTPError as e:
             # 4xx is bad here — '/' should serve a page or JSON
-            errors.append(f"GET / returned HTTP {e.code}")
+            errors.append(_tag(ERR_RUNTIME, f"GET / returned HTTP {e.code}"))
         except Exception as e:
-            errors.append(f"GET / failed: {e}")
+            errors.append(_tag(ERR_RUNTIME, f"GET / failed: {e}"))
+
+        # Build a quick lookup so we can find a route's schema/tests by key.
+        spec_by_route = {}
+        if spec and spec.get("routes"):
+            for r in spec["routes"]:
+                spec_by_route[(r["method"].upper(), r["path"])] = r
+
+        # Build a body lookup keyed by (METHOD, PATH) so the loop below can
+        # send realistic data for routes that have body schemas.
+        body_by_route = {}
+        if spec and spec.get("routes"):
+            for r in spec["routes"]:
+                if r.get("body"):
+                    key = (r["method"].upper(), r["path"])
+                    body_by_route[key] = _build_sample_body(r["body"])
+
+        # Don't probe parameterized paths like /api/items/<int:item_id> — we'd
+        # need a real ID. The persistence pass below handles those when needed.
+        def _is_concrete(p):
+            return ("<" not in p) and ("{" not in p)
 
         for method, path in (expected_routes or []):
+            if not _is_concrete(path):
+                continue
             url = f"http://127.0.0.1:{port}{path}"
+            route_meta = spec_by_route.get((method, path))
             try:
                 if method in ("POST", "PUT", "PATCH"):
+                    body_obj = body_by_route.get((method, path), {})
                     req = urllib.request.Request(
                         url, method=method,
-                        data=b'{}',
+                        data=json.dumps(body_obj).encode("utf-8"),
                         headers={"Content-Type": "application/json"},
                     )
                 else:
                     req = urllib.request.Request(url, method=method)
-                urllib.request.urlopen(req, timeout=5).read()
+                resp = urllib.request.urlopen(req, timeout=5)
+                raw_body = resp.read()
+                # Deep response-shape validation for spec'd JSON routes.
+                # Skip HTML-typed responses, body-less DELETE, and routes with
+                # no declared response (we only validate what the spec promised).
+                if route_meta and route_meta.get("response") and route_meta["response"].get("_") != "html":
+                    try:
+                        parsed_body = json.loads(raw_body.decode("utf-8"))
+                    except Exception:
+                        errors.append(_tag(
+                            ERR_SCHEMA_INVALID,
+                            f"{method} {path} response is not valid JSON (spec declared a JSON shape)",
+                        ))
+                    else:
+                        shape_issues = _validate_response_shape(parsed_body, route_meta["response"])
+                        for issue in shape_issues[:3]:  # keep noise down
+                            errors.append(_tag(
+                                ERR_SCHEMA_INVALID,
+                                f"{method} {path} response: {issue}",
+                            ))
             except urllib.error.HTTPError as e:
-                # 404 = route doesn't exist. 405 = route exists with wrong method.
-                # Anything else (400/422/etc) means the route exists and is
-                # rejecting our placeholder data — that's fine for smoke.
-                if e.code in (404, 405):
-                    errors.append(f"{method} {path} returned HTTP {e.code}")
+                if e.code == 404:
+                    errors.append(_tag(ERR_ROUTE_MISSING, f"{method} {path} returned HTTP 404"))
+                elif e.code == 405:
+                    errors.append(_tag(ERR_METHOD_MISMATCH, f"{method} {path} returned HTTP 405 (route exists but rejects {method})"))
+                elif 500 <= e.code < 600:
+                    errors.append(_tag(ERR_RUNTIME, f"{method} {path} returned HTTP {e.code} (server error)"))
+                # 4xx other than 404/405: route exists, just rejecting the
+                # placeholder body — fine.
             except Exception as e:
-                errors.append(f"{method} {path} failed: {e}")
+                errors.append(_tag(ERR_RUNTIME, f"{method} {path} failed: {e}"))
+
+        # Logic assertions — for each route's `tests`, send the input and
+        # verify the response contains the expected fields with equal values.
+        # This catches "structurally correct, logically wrong" output (e.g.
+        # /add returning {result: 10} for 2+3).
+        if spec and spec.get("routes"):
+            for r in spec["routes"]:
+                tests = r.get("tests") or []
+                if not tests:
+                    continue
+                if not _is_concrete(r["path"]):
+                    continue
+                test_url = f"http://127.0.0.1:{port}{r['path']}"
+                method = r["method"].upper()
+                for idx, t in enumerate(tests):
+                    try:
+                        if method in ("POST", "PUT", "PATCH"):
+                            payload = t.get("input") or {}
+                            req = urllib.request.Request(
+                                test_url, method=method,
+                                data=json.dumps(payload).encode("utf-8"),
+                                headers={"Content-Type": "application/json"},
+                            )
+                        else:
+                            req = urllib.request.Request(test_url, method=method)
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        raw = resp.read()
+                        try:
+                            parsed = json.loads(raw.decode("utf-8"))
+                        except Exception:
+                            errors.append(_tag(
+                                ERR_LOGIC_ERROR,
+                                f"{method} {r['path']} test #{idx + 1} returned non-JSON when expected {t['expected']}",
+                            ))
+                            continue
+                        diffs = _expected_subset_matches(parsed, t["expected"])
+                        for d in diffs[:2]:
+                            input_repr = json.dumps(t.get("input") or {}, separators=(",", ":"))
+                            errors.append(_tag(
+                                ERR_LOGIC_ERROR,
+                                f"{method} {r['path']} with input {input_repr}: {d}",
+                            ))
+                    except urllib.error.HTTPError as e:
+                        # Test failed because the route 4xx'd on its own example.
+                        errors.append(_tag(
+                            ERR_LOGIC_ERROR,
+                            f"{method} {r['path']} test #{idx + 1} returned HTTP {e.code} (expected 2xx with {t['expected']})",
+                        ))
+                    except Exception as e:
+                        errors.append(_tag(
+                            ERR_RUNTIME,
+                            f"{method} {r['path']} test #{idx + 1} crashed: {e}",
+                        ))
+
+        # Persistence pass: when the spec declares both a POST and a GET on
+        # the same base path, send the POST then re-fetch the GET and verify
+        # something changed. Catches "data didn't persist" silent bugs.
+        if spec and spec.get("routes"):
+            paths_with_post = {r["path"] for r in spec["routes"] if r["method"].upper() == "POST"}
+            paths_with_get  = {r["path"] for r in spec["routes"] if r["method"].upper() == "GET"}
+            crud_paths = paths_with_post & paths_with_get
+            for p in crud_paths:
+                if not _is_concrete(p):
+                    continue
+                url = f"http://127.0.0.1:{port}{p}"
+                # Read state BEFORE the POST.
+                before = b""
+                try:
+                    before = urllib.request.urlopen(
+                        urllib.request.Request(url, method="GET"), timeout=5,
+                    ).read()
+                except Exception:
+                    continue  # GET already broken; main loop captured it.
+                # POST a realistic body to create a record.
+                try:
+                    post_body = body_by_route.get(("POST", p), {"name": "smoke_test_marker"})
+                    urllib.request.urlopen(
+                        urllib.request.Request(
+                            url, method="POST",
+                            data=json.dumps(post_body).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                        ),
+                        timeout=5,
+                    ).read()
+                except urllib.error.HTTPError as e:
+                    if e.code in (404, 405) or 500 <= e.code < 600:
+                        # Already reported above.
+                        continue
+                    # 4xx — body validation rejected our sample. Skip persistence
+                    # check but don't flag, since we can't synthesize valid data
+                    # for arbitrary schemas.
+                    continue
+                except Exception:
+                    continue
+                # Read state AFTER the POST.
+                try:
+                    after = urllib.request.urlopen(
+                        urllib.request.Request(url, method="GET"), timeout=5,
+                    ).read()
+                except Exception:
+                    continue
+                if before == after:
+                    errors.append(_tag(
+                        ERR_PERSISTENCE_FAIL,
+                        f"POST {p} did not change subsequent GET {p}. "
+                        "Data is not being stored across requests.",
+                    ))
 
         return (len(errors) == 0, errors)
 
@@ -657,8 +1307,142 @@ def _generate_recommendations(user_request, code):
     return cleaned
 
 
+_DECOMPOSE_BLOCK_RE = re.compile(
+    r"```(?:json)?\s*([\s\S]*?)```",
+    re.IGNORECASE,
+)
+
+
+def decompose_request(user_request):
+    """Decide whether the request is one cohesive app or a composite of modules.
+
+    Returns a dict shaped like:
+        {"complexity": "simple"|"composite", "modules": [{"name", "purpose"}]}
+
+    On any failure (LLM error, malformed JSON), falls back to a single 'main'
+    module so the build still proceeds. The decomposer keeps the existing
+    pipeline intact — it only enriches what gets handed to the architect."""
+    fallback = {"complexity": "simple",
+                "modules": [{"name": "main", "purpose": (user_request or "").strip()}]}
+    text = (user_request or "").strip()
+    if not text or len(text) < 10:
+        return fallback
+
+    system_prompt = (
+        "You decompose user app requests into independent backend modules.\n"
+        "Output ONLY a single fenced JSON block (no prose), shaped exactly like:\n"
+        '```json\n{\n  "complexity": "simple" | "composite",\n'
+        '  "modules": [\n    {"name": "auth", "purpose": "user login and signup"},\n'
+        '    {"name": "posts", "purpose": "create and list posts"}\n  ]\n}\n```\n'
+        "\nRules:\n"
+        "- 'simple' apps (one cohesive purpose, ≤5 routes) get ONE module named 'main'.\n"
+        "- 'composite' apps get 2 to 4 modules. Never more than 4. Each module is a\n"
+        "  small group of routes around one responsibility.\n"
+        "- Module names: lowercase snake_case, single word when possible.\n"
+        "- Do NOT over-decompose. A todo app is ONE module, not three.\n"
+        "- Decomposition is only for prompts that genuinely span multiple distinct\n"
+        "  responsibilities (auth + content, dashboard + admin, etc.).\n"
+    )
+    user_prompt = f"Decompose this user request:\n\"\"\"{clamp_text(text, 600)}\"\"\""
+
+    try:
+        raw = agent_call(
+            "architect",
+            system_prompt,
+            user_prompt,
+            timeout_seconds=60,
+        )
+    except Exception as exc:
+        log(f"[DECOMPOSE] LLM call failed: {exc}")
+        return fallback
+
+    raw = (raw or "").strip()
+    parsed = None
+
+    # Try a fenced ```json``` block first.
+    match = _DECOMPOSE_BLOCK_RE.search(raw)
+    if match:
+        try:
+            parsed = json.loads(match.group(1).strip())
+        except Exception:
+            parsed = None
+
+    # Fallback: scan for the first balanced {...} that mentions "complexity"
+    # or "modules" — handles models that emit raw JSON with surrounding prose.
+    if parsed is None:
+        depth = 0
+        start = -1
+        for i, ch in enumerate(raw):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start != -1:
+                    candidate = raw[start:i + 1]
+                    if '"modules"' in candidate or '"complexity"' in candidate:
+                        try:
+                            parsed = json.loads(candidate)
+                            break
+                        except Exception:
+                            pass
+                    start = -1
+
+    if parsed is None:
+        # Last-ditch: try the whole string verbatim.
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            log(f"[DECOMPOSE] JSON parse failed: {exc}")
+            return fallback
+
+    if not isinstance(parsed, dict):
+        return fallback
+    modules_raw = parsed.get("modules") or []
+    if not isinstance(modules_raw, list) or not modules_raw:
+        return fallback
+
+    cleaned = []
+    seen_names = set()
+    for m in modules_raw:
+        if not isinstance(m, dict):
+            continue
+        name = (m.get("name") or "").strip().lower().replace(" ", "_")
+        purpose = (m.get("purpose") or "").strip()
+        if not name or not purpose:
+            continue
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        cleaned.append({"name": name, "purpose": purpose})
+        if len(cleaned) >= 4:
+            break
+
+    if not cleaned:
+        return fallback
+    if len(cleaned) == 1:
+        return {"complexity": "simple", "modules": cleaned}
+    return {"complexity": "composite", "modules": cleaned}
+
+
+def _format_modules_for_architect(user_request, modules):
+    """Build the text the architect sees when the request was decomposed."""
+    bullet_lines = "\n".join(f"  - {m['name']}: {m['purpose']}" for m in modules)
+    return (
+        f"{user_request}\n\n"
+        f"--- DECOMPOSED MODULES (system-generated) ---\n"
+        f"This request spans multiple modules. Build a SINGLE Flask app whose\n"
+        f"routes cover every module below. Group routes per module under matching\n"
+        f"path prefixes (e.g. /auth/login, /posts/, /comments/) so the resulting\n"
+        f"app is internally organized:\n\n{bullet_lines}\n\n"
+        f"Keep it to one main.py file (no separate module files). The ROUTES_SPEC\n"
+        f"must list every route from every module."
+    )
+
+
 def build_pipeline(user_request):
-    """Run architect->coder->debugger->tester->reviewer->polish pipeline."""
+    """Run decomposer->architect->coder->debugger->tester->reviewer->polish pipeline."""
     build_state["status"] = "building"
     started_at = time.time()
     # Stash on build_state so reconnects via the `init` event can resume the
@@ -668,6 +1452,7 @@ def build_pipeline(user_request):
     # Reset any stale post-build artifacts from a previous run.
     build_state.pop("recommendations", None)
     build_state.pop("first_error", None)
+    build_state.pop("modules", None)
     broadcast("build_start", {
         "request": user_request,
         "eta_seconds": _TYPICAL_BUILD_SECONDS,
@@ -677,40 +1462,128 @@ def build_pipeline(user_request):
     first_smoke_error = ""
 
     try:
+        # Phase 0 — Decompose. Decide whether this is one cohesive app or a
+        # composite of modules. If composite, the architect will see an enriched
+        # prompt that lists every module; the rest of the pipeline (spec, smoke,
+        # repair) is unchanged.
+        set_agent("architect", "working", "Decomposing the request...", 8)
+        decomposition = decompose_request(user_request)
+        modules = decomposition.get("modules", [])
+        is_composite = decomposition.get("complexity") == "composite" and len(modules) > 1
+        build_state["modules"] = modules
+        broadcast("decomposition", {
+            "complexity": decomposition.get("complexity", "simple"),
+            "modules": modules,
+        })
+        if is_composite:
+            module_names = ", ".join(m["name"] for m in modules)
+            log(f"[DECOMPOSE] Composite build with {len(modules)} modules: {module_names}")
+            architect_request = _format_modules_for_architect(user_request, modules)
+        else:
+            log("[DECOMPOSE] Single-module build")
+            architect_request = user_request
+
         set_agent("architect", "working", "Studying the requirements...", 20)
         functional_hint = _build_functionality_requirements_hint(user_request)
         plan = agent_call(
             "architect",
-            """You are a senior software architect. Given a user request, produce a detailed build plan.
-Your output MUST include, in this exact order, with section headings:
+            """You are a senior software architect. Produce a build plan in this EXACT format.
 
-1. ROUTES — list every HTTP route the backend will expose, ONE PER LINE, in this exact format:
-   - METHOD /path - one-line purpose
-   Example:
-   - GET / - serves the main HTML page
-   - GET /api/items - returns JSON list of items
-   - POST /api/items - creates a new item from JSON body
-   This list will be parsed and used to smoke-test the backend, so the format must be exact.
+The very FIRST thing in your output must be a fenced JSON block called ROUTES_SPEC.
+This is a hard contract that downstream agents implement verbatim — no improvisation.
 
-2. DATA MODEL — what data is stored in memory (Python list/dict shape).
+ROUTES_SPEC
+```json
+{
+  "routes": [
+    {
+      "path": "/",
+      "method": "GET",
+      "module": "main",
+      "purpose": "serves the main HTML page",
+      "body": null,
+      "response": {"_": "html"}
+    },
+    {
+      "path": "/api/items",
+      "method": "GET",
+      "module": "items",
+      "purpose": "list items",
+      "body": null,
+      "response": {"items": "list"}
+    },
+    {
+      "path": "/api/items",
+      "method": "POST",
+      "module": "items",
+      "purpose": "create one item",
+      "body": {"name": "string"},
+      "response": {"id": "int", "name": "string"}
+    },
+    {
+      "path": "/api/add",
+      "method": "POST",
+      "module": "calc",
+      "purpose": "add two numbers",
+      "body": {"a": "int", "b": "int"},
+      "response": {"result": "int"},
+      "tests": [
+        {"input": {"a": 2, "b": 3},  "expected": {"result": 5}},
+        {"input": {"a": -4, "b": 4}, "expected": {"result": 0}},
+        {"input": {"a": 0, "b": 0},  "expected": {"result": 0}}
+      ]
+    }
+  ]
+}
+```
 
-3. FILE STRUCTURE — single-file Flask app: main.py with embedded HTML via render_template_string.
+Rules for ROUTES_SPEC:
+- ALWAYS valid JSON between the fenced ```json``` markers.
+- Every route the backend exposes is listed. No more, no fewer.
+- "method" is one of: GET, POST, PUT, PATCH, DELETE.
+- "module" — REQUIRED — the module name this route belongs to. For composite
+  builds use the names from the decomposition list. For simple builds use "main".
+  This lets the system attribute failures to a module so repairs don't ripple
+  across unrelated code.
+- "body" is null for GET/DELETE, otherwise a {field: type} object — types are
+  one of: "string", "int", "float", "bool", "list", "dict".
+- "response" is a {field: type} object describing the JSON shape on 2xx, or
+  {"_": "html"} for routes that return rendered HTML.
+- "tests" — for any route with DETERMINISTIC, INPUT-DEPENDENT output
+  (calculations, transforms, lookups), include AT LEAST 3 test cases that VARY
+  THE INPUTS and produce DIFFERENT EXPECTED OUTPUTS. Cover at least one edge
+  case: zero, negative number, empty string, boundary, or unusual unicode.
+  Format: {"input": <body or null>, "expected": <subset of response fields>}.
+  WHY 3 minimum: a single case lets the model hardcode `if a==2 and b==3: return 5`.
+  Two cases lets it hardcode an if/else. Three forces a real implementation.
+  Skip `tests` ONLY if output is genuinely non-deterministic (timestamps, random IDs,
+  list ordering).
+- Keep paths short and consistent. CRUD endpoints share a base path.
 
-4. IMPLEMENTATION STEPS — numbered, in build order.
+After the JSON block, include a short prose plan with these sections:
 
-5. EDGE CASES — what to validate / guard against.
+DATA MODEL — what's stored in memory (Python list/dict shape).
+FILE STRUCTURE — single-file Flask app: main.py with embedded HTML via render_template_string.
+IMPLEMENTATION STEPS — numbered, in build order.
+EDGE CASES — inputs to validate against.
 
-Keep it tight. The system will use the ROUTES section verbatim — don't put routes anywhere else.""",
-            f"Build this application: {user_request}\n\n{functional_hint}",
+Keep the prose tight. The ROUTES_SPEC JSON block is what other agents follow.""",
+            f"Build this application: {architect_request}\n\n{functional_hint}",
         )
         build_state["output"]["plan"] = plan
         set_agent("architect", "done", "Blueprint complete! 📋", 100)
         broadcast("output_update", {"type": "plan", "content": plan})
 
-        # Pull the architect's declared routes so later phases can verify them.
-        # If parsing fails, the smoke test still does a basic '/' probe.
-        planned_routes = _extract_routes_from_plan(plan)
-        log(f"[ARCHITECT] Planned routes: {planned_routes if planned_routes else 'none parsed'}")
+        # Parse the structured spec; fall back to regex extraction if the model
+        # failed to produce valid JSON.
+        spec = _extract_spec_from_plan(plan)
+        if spec and spec.get("routes"):
+            planned_routes = [(r.get("method", "").upper(), r.get("path", ""))
+                              for r in spec["routes"] if r.get("path")]
+            log(f"[ARCHITECT] Spec contract: {len(spec['routes'])} routes")
+        else:
+            planned_routes = _extract_routes_from_plan(plan)
+            log(f"[ARCHITECT] Falling back to regex routes: {planned_routes if planned_routes else 'none parsed'}")
 
         code = ""
         last_error = ""
@@ -720,12 +1593,41 @@ Keep it tight. The system will use the ROUTES section verbatim — don't put rou
             attempt_label = rebuild_idx + 1
             total_attempts = MAX_REBUILD_ATTEMPTS + 1
 
+            spec_block = _spec_render_for_prompt(spec)
+            spec_section = (
+                "\n\n=== ROUTES_SPEC (HARD CONTRACT — implement EXACTLY, no extra "
+                "routes, no missing routes, no method changes) ===\n"
+                f"```json\n{spec_block}\n```\n"
+                "Implementation rules:\n"
+                "- Every route in this spec MUST exist as an @app.route with the "
+                "  matching path AND `methods=[...]` declaration.\n"
+                "- Do not add routes outside this spec. Do not rename paths.\n"
+                "- Response shapes must match the `response` field of each route.\n"
+                "- For POST/PUT/PATCH, parse JSON via `request.get_json(silent=True) or {}` "
+                "  and validate the fields listed in `body`.\n"
+                "\n"
+                "MODULE STRUCTURE (REQUIRED — do not skip):\n"
+                "- Group code by the `module` field on each route. ALL handlers for a\n"
+                "  given module must sit between two marker comments:\n"
+                "      # ===== MODULE: <name> =====\n"
+                "      ... handlers + helpers + module-local state for that module ...\n"
+                "      # ===== END: <name> =====\n"
+                "- Module-local state goes INSIDE that module's block, with a name\n"
+                "  prefixed by the module: `auth_users = {}`, `posts_list = []`. Never\n"
+                "  share a single global mutable across modules.\n"
+                "- A module may include a `# ===== MODULE: shared =====` block above the\n"
+                "  others for imports / app setup / common helpers.\n"
+                "- These markers are how the system attributes failures to a module and\n"
+                "  scopes repairs. Skipping them causes regressions when bugs are fixed."
+            ) if spec_block else ""
+
             if rebuild_idx == 0:
                 set_agent("coder", "working", "Writing code...", 10)
                 coder_prompt = (
                     f"Implement this plan fully:\n\n{plan}\n\n"
                     f"Original user request:\n{user_request}\n\n"
                     f"{functional_hint}"
+                    f"{spec_section}"
                 )
             else:
                 set_agent(
@@ -745,6 +1647,7 @@ Keep it tight. The system will use the ROUTES section verbatim — don't put rou
                     f"Original plan:\n{plan}\n\n"
                     f"Previous failing code:\n{clamp_text(code, 2200)}\n\n"
                     f"Last error details:\n{clamp_text(last_error, 900)}"
+                    f"{spec_section}"
                 )
 
             raw_code = agent_call(
@@ -827,9 +1730,46 @@ Rules:
             # NameErrors that only fire at request time, or apps that crash on the
             # first request. Subprocess-run the code on a free port and HTTP-probe.
             if debug_success:
+                # Static spec check first: catch missing/wrong-method routes BEFORE
+                # we burn time launching a subprocess. If the architect declared a
+                # POST /api/items but the code only has GET /api/items, we know
+                # we'll get a 405 — fix it now with a targeted prompt.
+                if spec:
+                    missing, extra = _validate_routes_against_spec(code, spec)
+                    if missing:
+                        set_agent("debugger", "working",
+                                  f"Adding missing routes: {missing[0]}", 95)
+                        log(f"[SPEC] Code missing routes from spec: {missing}")
+                        spec_repair_text = (
+                            "The implementation is missing routes from the spec contract.\n"
+                            f"Missing: {', '.join(missing)}\n"
+                            + (f"Extra (in code but not in spec, OK to keep): {', '.join(extra)}\n" if extra else "")
+                            + "\nAdd the missing @app.route handlers with the EXACT path and "
+                            "methods=[...] declaration from the spec. Don't remove existing routes."
+                        )
+                        repair_ok, repaired_code, repair_error = try_repair_code(
+                            code=code,
+                            error_text=spec_repair_text,
+                            context_note=(
+                                "Implement every route in the architect's spec contract. "
+                                f"Spec routes: {[(r['method'], r['path']) for r in spec['routes']]}"
+                            ),
+                            attempts=2,
+                            runtime_check=False,
+                        )
+                        if repair_ok:
+                            still_missing, _ = _validate_routes_against_spec(repaired_code, spec)
+                            if not still_missing:
+                                code = repaired_code
+                                build_state["output"]["code"] = code
+                                broadcast("output_update", {"type": "code", "content": code})
+                                log("[SPEC] Repair filled in missing routes.")
+                            else:
+                                log(f"[SPEC] Repair still missing: {still_missing}")
+
                 set_agent("debugger", "working", "Smoke-testing routes...", 96)
                 smoke_ok, smoke_errors = _smoke_test_code(
-                    code, expected_routes=planned_routes,
+                    code, expected_routes=planned_routes, spec=spec,
                 )
                 if not smoke_ok and smoke_errors:
                     smoke_summary = "; ".join(smoke_errors[:3])
@@ -842,15 +1782,13 @@ Rules:
                         "debugger", "working",
                         f"Fixing wiring: {smoke_errors[0][:60]}", 97,
                     )
+                    # Build a TYPE-AWARE repair prompt. Group errors by tag so
+                    # we can give the model focused guidance per failure class
+                    # instead of dumping everything as one mixed list.
+                    repair_text = _build_targeted_repair_prompt(smoke_errors, spec)
                     repair_ok, repaired_code, repair_error = try_repair_code(
                         code=code,
-                        error_text=(
-                            f"The app launched but failed runtime smoke tests:\n"
-                            f"{smoke_summary}\n\n"
-                            "Make sure '/' actually serves a page (or 200 JSON), and "
-                            "every declared @app.route exists with the correct HTTP "
-                            "method. No 404s, no 405 Method Not Allowed at runtime."
-                        ),
+                        error_text=repair_text,
                         context_note=(
                             f"Wire the Flask app so all routes work end-to-end. "
                             f"Architect declared routes: {planned_routes or '(none parsed)'}"
@@ -861,7 +1799,7 @@ Rules:
                     if repair_ok:
                         # Re-smoke the repaired code; only adopt if it now passes.
                         retry_ok, retry_errors = _smoke_test_code(
-                            repaired_code, expected_routes=planned_routes,
+                            repaired_code, expected_routes=planned_routes, spec=spec,
                         )
                         if retry_ok:
                             code = repaired_code
@@ -1117,4 +2055,5 @@ ends with app.run(host=\"0.0.0.0\", port=int(os.environ.get(\"PORT\", \"5600\"))
             "recommendations": build_state.get("recommendations", []),
             "first_error": build_state.get("first_error", ""),
             "user_request": user_request,
+            "modules": build_state.get("modules", []),
         })

@@ -72,7 +72,7 @@ def _normalize_text(s: str) -> str:
     return ' '.join(s.split()).strip().lower()
 
 
-def find_similar_in_history(text: str, threshold: float = 0.72):
+def find_similar_in_history(text: str, threshold: float = 0.75):
     """Return (fp, entry, score) for the best matching historic prompt above threshold, else (None, None, 0).
 
     Uses difflib.SequenceMatcher for a quick similarity check on normalized prompt texts.
@@ -177,7 +177,7 @@ def process_prompts():
                 try:
                     history = load_history()
                     fp = fingerprint_prompt(txt)
-                    history[fp] = {'suggestion': out, 'model_used': suggestion['model_used'], 'created_at': suggestion['created_at']}
+                    history[fp] = {'prompt_text': txt, 'suggestion': out, 'model_used': suggestion['model_used'], 'created_at': suggestion['created_at']}
                     save_history(history)
                 except Exception:
                     pass

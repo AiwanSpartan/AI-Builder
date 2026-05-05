@@ -20,6 +20,25 @@ def main():
     ts = int(time.time())
     rv_report = os.path.join(OUT_DIR, f'rv_test_{ts}.txt')
     repair_report = os.path.join(OUT_DIR, f'repair_loop_{ts}.txt')
+    sample_proc = None
+    # Prefer launching a generated backend if present (matches architect.txt), otherwise fall back to sample_app.py
+    generated_app = os.path.join(os.path.dirname(__file__), 'generated_app.py')
+    sample_app = os.path.join(os.path.dirname(__file__), 'sample_app.py')
+    to_start = None
+    if os.path.exists(generated_app):
+        to_start = generated_app
+    elif os.path.exists(sample_app):
+        to_start = sample_app
+    if to_start:
+        try:
+            py_exec = os.path.join(os.path.dirname(__file__), '.venv', 'Scripts', 'python.exe')
+            if not os.path.exists(py_exec):
+                py_exec = 'python'
+            sample_proc = subprocess.Popen([py_exec, to_start], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # give server a moment to start
+            time.sleep(0.8)
+        except Exception:
+            sample_proc = None
     pipeline_report = os.path.join(OUT_DIR, f'pipeline_test_{ts}.txt')
 
     print('Running rv_test.py...')
@@ -36,7 +55,17 @@ def main():
 
     if rc1 != 0 or rc2 != 0 or rc3 != 0:
         print('One or more tests failed. Reports are in', OUT_DIR)
+        if sample_proc:
+            try:
+                sample_proc.terminate()
+            except Exception:
+                pass
         raise SystemExit(2)
+    if sample_proc:
+        try:
+            sample_proc.terminate()
+        except Exception:
+            pass
 
     print('All tests passed. Reports are in', OUT_DIR)
     return 0

@@ -222,6 +222,27 @@ body.no-webgl #canvas-container::after {
 }
 #hud-eta.visible { display: inline-block; }
 
+/* Decomposition modules badge — shown when the request was split into multiple
+   modules so the user knows what's being built. */
+#hud-modules {
+  display: none;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.7px;
+  color: #c4b5fd;
+  padding: 5px 11px;
+  border: 1px solid rgba(139,92,246,0.35);
+  border-radius: 6px;
+  background: rgba(6,14,28,0.7);
+  margin-right: 4px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hud-modules.visible { display: inline-block; }
+
 @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.25} }
 
 /* ── Agent Cards ─────────────────────────────── */
@@ -490,6 +511,47 @@ body.no-webgl #canvas-container::after {
 }
 #build-btn:hover { background: linear-gradient(135deg, #0ea5e9, #38bdf8); box-shadow: 0 0 18px rgba(14,165,233,0.35); }
 #build-btn:disabled { opacity: 0.3; cursor: not-allowed; box-shadow: none; }
+
+/* ── Prompt suggestions strip (above input) ────── */
+#prompt-suggestions {
+  position: fixed;
+  bottom: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(660px, calc(100vw - 36px));
+  z-index: 99;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px;
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+}
+#prompt-suggestions.hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+  pointer-events: none !important;
+}
+.ps-chip {
+  pointer-events: auto;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 5px 12px;
+  background: rgba(6,14,28,0.72);
+  border: 1px solid rgba(14,165,233,0.22);
+  border-radius: 999px;
+  color: #93c5fd;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+  backdrop-filter: blur(10px);
+}
+.ps-chip:hover {
+  background: rgba(14,165,233,0.16);
+  border-color: rgba(14,165,233,0.55);
+  transform: translateY(-1px);
+}
+.ps-chip:active { transform: translateY(0); }
 
 /* ── Toasts ──────────────────────────────────── */
 #toasts {
@@ -799,77 +861,231 @@ body.no-webgl #canvas-container::after {
 #build-actions {
   display: none;
   position: fixed;
-  bottom: 90px;
+  bottom: 96px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 180;
-  background: linear-gradient(180deg, rgba(8,18,36,0.97) 0%, rgba(4,10,22,0.97) 100%);
+  width: min(560px, 92vw);
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  background: linear-gradient(180deg, rgba(10,22,42,0.98) 0%, rgba(4,10,22,0.98) 100%);
   border: 1px solid rgba(16,185,129,0.4);
-  border-radius: 14px;
-  padding: 18px 22px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 28px rgba(16,185,129,0.15);
+  border-radius: 16px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.6), 0 0 32px rgba(16,185,129,0.14);
   animation: buildActionsPop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-#build-actions.visible { display: flex; flex-direction: column; gap: 12px; }
+#build-actions.visible { display: flex; flex-direction: column; gap: 14px; }
 @keyframes buildActionsPop {
-  0%   { opacity: 0; transform: translateX(-50%) translateY(20px) scale(0.92); }
+  0%   { opacity: 0; transform: translateX(-50%) translateY(20px) scale(0.94); }
   100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
+
+/* ── Header ─────────────────────────────────────── */
+#build-actions-header { display: flex; flex-direction: column; gap: 4px; padding-right: 28px; }
 #build-actions-title {
+  font-family: var(--sans);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--success);
+  display: flex; align-items: center; gap: 8px;
+}
+#build-actions-title::before {
+  content: '✓';
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: rgba(16,185,129,0.18);
+  border: 1px solid rgba(16,185,129,0.5);
+  font-size: 13px;
+}
+#build-actions-subtitle {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.1px;
+}
+
+/* ── Error banner (only when smoke caught a problem) ── */
+#build-actions-error {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.32);
+  border-radius: 9px;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--success);
-  text-align: center;
+  line-height: 1.5;
+  color: #fca5a5;
 }
-#build-actions-row { display: flex; gap: 12px; align-items: stretch; }
+#build-actions-error[hidden] { display: none; }
+.ba-error-icon {
+  flex-shrink: 0;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(239,68,68,0.28);
+  color: #fee;
+  font-weight: 700;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  margin-top: 1px;
+}
+
+/* ── Primary action row ──────────────────────────── */
+#build-actions-row { display: flex; gap: 10px; align-items: stretch; }
 .ba-btn {
+  flex: 1;
   font-family: var(--sans);
   font-weight: 600;
   font-size: 13px;
-  letter-spacing: 0.6px;
-  padding: 12px 22px;
+  letter-spacing: 0.4px;
+  padding: 11px 14px;
   border-radius: 10px;
   cursor: pointer;
-  transition: all 0.18s;
+  transition: transform 0.15s, box-shadow 0.18s, background 0.18s;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 180px;
   justify-content: center;
 }
 .ba-btn-test {
-  background: linear-gradient(180deg, rgba(16,185,129,0.22), rgba(16,185,129,0.12));
+  background: linear-gradient(180deg, rgba(16,185,129,0.24), rgba(16,185,129,0.12));
   border: 1px solid rgba(16,185,129,0.6);
   color: #6ee7b7;
 }
 .ba-btn-test:hover {
-  background: linear-gradient(180deg, rgba(16,185,129,0.34), rgba(16,185,129,0.2));
+  background: linear-gradient(180deg, rgba(16,185,129,0.36), rgba(16,185,129,0.2));
   box-shadow: 0 0 22px rgba(16,185,129,0.32);
   transform: translateY(-1px);
 }
 .ba-btn-download {
-  background: linear-gradient(180deg, rgba(99,102,241,0.2), rgba(99,102,241,0.1));
+  background: linear-gradient(180deg, rgba(99,102,241,0.22), rgba(99,102,241,0.1));
   border: 1px solid rgba(99,102,241,0.55);
   color: #c7d2fe;
 }
 .ba-btn-download:hover {
-  background: linear-gradient(180deg, rgba(99,102,241,0.32), rgba(99,102,241,0.18));
+  background: linear-gradient(180deg, rgba(99,102,241,0.34), rgba(99,102,241,0.18));
   box-shadow: 0 0 22px rgba(99,102,241,0.3);
   transform: translateY(-1px);
 }
+
+/* ── Section labels (recs / refine) ─────────────── */
+.ba-section-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+
+/* ── Suggested next-steps chips ─────────────────── */
+#build-actions-recs[hidden] { display: none; }
+#build-actions-rec-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ba-chip {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 9px 12px;
+  background: rgba(14,165,233,0.06);
+  border: 1px solid rgba(14,165,233,0.22);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  display: flex; align-items: center; gap: 9px;
+}
+.ba-chip::before {
+  content: '+';
+  flex-shrink: 0;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: rgba(14,165,233,0.18);
+  color: var(--accent);
+  font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px;
+}
+.ba-chip:hover {
+  background: rgba(14,165,233,0.14);
+  border-color: rgba(14,165,233,0.5);
+  transform: translateX(2px);
+}
+
+/* ── Refine textarea ────────────────────────────── */
+#build-actions-refine { display: flex; flex-direction: column; }
+#refine-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 56px;
+  max-height: 160px;
+  padding: 10px 12px;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(2,8,16,0.7);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+#refine-input::placeholder { color: var(--muted); }
+#refine-input:focus {
+  border-color: rgba(14,165,233,0.55);
+  background: rgba(2,8,16,0.92);
+}
+#refine-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 8px; gap: 12px;
+}
+.ba-hint {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+#refine-submit {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 7px 14px;
+  background: rgba(14,165,233,0.16);
+  border: 1px solid rgba(14,165,233,0.45);
+  color: var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+#refine-submit:hover:not(:disabled) {
+  background: rgba(14,165,233,0.26);
+  border-color: rgba(14,165,233,0.7);
+}
+#refine-submit:disabled { opacity: 0.45; cursor: progress; }
+
 #build-actions-close {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 8px;
+  right: 10px;
   background: transparent;
   border: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 18px;
+  line-height: 1;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
 }
 #build-actions-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
 
@@ -1198,6 +1414,7 @@ body.no-webgl #canvas-container::after {
     </div>
   </div>
 
+  <div id="hud-modules" title="Modules being built"></div>
   <div id="hud-eta" title="Estimated time remaining"></div>
   <div id="hud-status">
     <div class="s-dot"></div>
@@ -1296,23 +1513,66 @@ body.no-webgl #canvas-container::after {
   <div id="log-entries"></div>
 </div>
 
+<!-- Prompt suggestions — shown above the build input when it's empty -->
+<div id="prompt-suggestions">
+  <button type="button" class="ps-chip" data-prompt="build a calculator with add, subtract, multiply, divide">a calculator</button>
+  <button type="button" class="ps-chip" data-prompt="build a notes app with add, list, and delete">a notes app</button>
+  <button type="button" class="ps-chip" data-prompt="build a counter app with increment, decrement, and reset">a counter</button>
+  <button type="button" class="ps-chip" data-prompt="build a BMI calculator that takes height and weight">BMI calculator</button>
+  <button type="button" class="ps-chip" data-prompt="build a random quote generator with a refresh button">quote generator</button>
+  <button type="button" class="ps-chip" data-prompt="build a number guessing game where the server picks 1-100">guessing game</button>
+</div>
+
 <!-- Input -->
 <div id="input-panel">
-  <input id="build-input" type="text" placeholder="What do you want to build? e.g. 'a REST API with auth'" />
+  <input id="build-input" type="text" placeholder="What do you want to build? Click a chip above or type your own." />
   <button id="build-btn" onclick="startBuild()">Build</button>
 </div>
 
 <!-- Build Complete action panel -->
 <div id="build-actions">
   <button type="button" id="build-actions-close" onclick="hideBuildActions()" aria-label="Close">×</button>
-  <div id="build-actions-title">✓ Build Complete</div>
+  <div id="build-actions-header">
+    <div id="build-actions-title">Build Complete</div>
+    <div id="build-actions-subtitle">Test it, tweak it, or download the code.</div>
+  </div>
+
+  <!-- Pre-detected error banner. Hidden unless the smoke test caught something. -->
+  <div id="build-actions-error" hidden>
+    <span class="ba-error-icon">!</span>
+    <span id="build-actions-error-text"></span>
+  </div>
+
   <div id="build-actions-row">
-    <button type="button" class="ba-btn ba-btn-test" onclick="hideBuildActions(); launchApp();">
-      <span style="font-size:16px;">▶</span> Test Your App
+    <button type="button" class="ba-btn ba-btn-test" onclick="launchApp();">
+      <span aria-hidden="true">▶</span> Test Your App
     </button>
     <button type="button" class="ba-btn ba-btn-download" onclick="downloadLatestBuild()">
-      <span style="font-size:16px;">↓</span> Download Code (ZIP)
+      <span aria-hidden="true">↓</span> Download ZIP
     </button>
+  </div>
+
+  <!-- Suggested next steps — populated from build_complete recommendations -->
+  <div id="build-actions-recs" hidden>
+    <div class="ba-section-label">Suggested next steps</div>
+    <div id="build-actions-rec-chips"></div>
+  </div>
+
+  <!-- Refine prompt — sends a follow-up to /refine -->
+  <div id="build-actions-refine">
+    <div class="ba-section-label">Improve or fix this app</div>
+    <textarea
+      id="refine-input"
+      rows="2"
+      maxlength="600"
+      placeholder="e.g. 'add a search box', 'show timestamps', 'fix the delete button'"
+    ></textarea>
+    <div id="refine-row">
+      <span id="refine-hint" class="ba-hint">↵ Enter to submit · Shift+↵ for newline</span>
+      <button type="button" id="refine-submit" onclick="submitRefinement()">
+        Apply Refinement
+      </button>
+    </div>
   </div>
 </div>
 
@@ -3661,7 +3921,12 @@ function connectWS() {
         setHud('done', 'COMPLETE');
         document.getElementById('launch-btn').style.display = 'block';
         document.getElementById('download-btn').style.display = 'block';
-        showBuildActions();
+        // build_state stashes recommendations + first_error for reconnects, so
+        // a hard refresh after a build still surfaces the same panel content.
+        showBuildActions({
+          recommendations: data.recommendations || [],
+          first_error: data.first_error || '',
+        });
       }
       // Build is mid-flight — resume the ETA countdown from the elapsed time
       // we missed while disconnected.
@@ -3670,6 +3935,11 @@ function connectWS() {
         const elapsedSeconds = (Date.now() / 1000) - data.started_at;
         const remaining = Math.max(15, Math.round(data.eta_seconds - elapsedSeconds));
         startBuildEta(remaining);
+        // Restore the modules badge if this build was decomposed and the page
+        // reloaded mid-flight.
+        if (data.modules && data.modules.length > 1) {
+          showDecomposition({complexity: 'composite', modules: data.modules});
+        }
       }
 
     } else if (event === 'agent_update') {
@@ -3698,11 +3968,18 @@ function connectWS() {
         showToast(data.message, 'working');
       }
 
+    } else if (event === 'decomposition') {
+      // Show the module breakdown the decomposer agent produced. For 'simple'
+      // (single module) builds we hide the badge — only worth surfacing when
+      // the request actually got split into pieces.
+      showDecomposition(data);
+
     } else if (event === 'build_start') {
       resetPipeline();
       document.getElementById('launch-btn').style.display = 'none';
       document.getElementById('download-btn').style.display = 'none';
       hideBuildActions();
+      hideDecomposition();
       const req = data.request.length > 38 ? data.request.slice(0,38) + '...' : data.request;
       setHud('building', 'BUILDING');
       startBuildEta(data.eta_seconds || 0);
@@ -3722,13 +3999,17 @@ function connectWS() {
       stopBuildLoopSfx();
       stopBuildMusic();
       stopBuildEta();
+      hideDecomposition();
       document.getElementById('build-btn').disabled = false;
 
       if (success) {
         setHud('done', 'COMPLETE');
         document.getElementById('launch-btn').style.display = 'block';
         document.getElementById('download-btn').style.display = 'block';
-        showBuildActions();
+        showBuildActions({
+          recommendations: (data && data.recommendations) || [],
+          first_error:     (data && data.first_error) || '',
+        });
         playBuildSfx('complete');
         allCheer();
         MiniGames.stop();
@@ -3748,6 +4029,7 @@ function connectWS() {
       stopBuildLoopSfx();
       stopBuildMusic();
       stopBuildEta();
+      hideDecomposition();
       MiniGames.stop();
       playBuildSfx('error');
       setTimeout(startIdleMusic, 1000);
@@ -3835,14 +4117,188 @@ document.getElementById('build-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') startBuild();
 });
 
-function showBuildActions() {
+// ── Prompt suggestion chips ─────────────────────────
+// Hide the strip while the user types or while a build is running, restore
+// it on idle when the input is empty.
+function _updatePromptSuggestionsVisibility() {
+  const wrap  = document.getElementById('prompt-suggestions');
+  const input = document.getElementById('build-input');
+  if (!wrap || !input) return;
+  const hudEl = document.getElementById('hud-status');
+  const isBuilding = !!(hudEl && hudEl.classList.contains('building'));
+  const hasText = !!input.value.trim();
+  wrap.classList.toggle('hidden', isBuilding || hasText);
+}
+
+document.querySelectorAll('.ps-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const input = document.getElementById('build-input');
+    if (!input) return;
+    const prompt = chip.getAttribute('data-prompt') || chip.textContent.trim();
+    input.value = prompt;
+    input.focus();
+    _updatePromptSuggestionsVisibility();
+    // Auto-submit so a chip click is one-step. Users can still type instead.
+    startBuild();
+  });
+});
+
+document.getElementById('build-input').addEventListener('input',
+  _updatePromptSuggestionsVisibility);
+
+// Hook hide/show into existing build state transitions. We extend (not replace)
+// the existing setHud so all old call sites still work.
+(function _wirePromptSuggestionsToHud() {
+  const orig = window.setHud;
+  if (typeof orig !== 'function') return;
+  window.setHud = function(cls, text) {
+    orig(cls, text);
+    _updatePromptSuggestionsVisibility();
+  };
+})();
+
+// Initial state on page load.
+_updatePromptSuggestionsVisibility();
+
+function showBuildActions(data) {
   const el = document.getElementById('build-actions');
-  if (el) el.classList.add('visible');
+  if (!el) return;
+  populateBuildActions(data || {});
+  el.classList.add('visible');
 }
 
 function hideBuildActions() {
   const el = document.getElementById('build-actions');
   if (el) el.classList.remove('visible');
+}
+
+function populateBuildActions(data) {
+  // Error banner — only shown when the smoke test caught something.
+  const errEl  = document.getElementById('build-actions-error');
+  const errTxt = document.getElementById('build-actions-error-text');
+  const firstError = (data && data.first_error) || '';
+  if (firstError && errEl && errTxt) {
+    errTxt.textContent = firstError.length > 220
+      ? firstError.slice(0, 220) + '…' : firstError;
+    errEl.hidden = false;
+  } else if (errEl) {
+    errEl.hidden = true;
+  }
+
+  // Suggested next steps — chips for each LLM-generated recommendation.
+  const recsEl   = document.getElementById('build-actions-recs');
+  const chipsEl  = document.getElementById('build-actions-rec-chips');
+  const recs     = (data && data.recommendations) || [];
+  if (chipsEl) {
+    chipsEl.innerHTML = '';
+    recs.slice(0, 3).forEach(text => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ba-chip';
+      btn.textContent = text;
+      btn.title = 'Click to load this into the refine box';
+      btn.addEventListener('click', () => {
+        const ta = document.getElementById('refine-input');
+        if (ta) { ta.value = text; ta.focus(); }
+      });
+      chipsEl.appendChild(btn);
+    });
+  }
+  if (recsEl) recsEl.hidden = recs.length === 0;
+
+  // Pre-fill the refine box with a fix-this prompt when there was an error,
+  // otherwise leave it empty.
+  const ta = document.getElementById('refine-input');
+  if (ta) {
+    if (firstError && !ta.value.trim()) {
+      const shortErr = firstError.length > 140 ? firstError.slice(0, 140) + '…' : firstError;
+      ta.value = `Fix: ${shortErr}`;
+    }
+  }
+}
+
+async function submitRefinement() {
+  const ta = document.getElementById('refine-input');
+  const btn = document.getElementById('refine-submit');
+  if (!ta || !btn) return;
+  const text = (ta.value || '').trim();
+  if (!text) {
+    ta.focus();
+    return;
+  }
+  // Detect fix vs enhance from the user's wording — backend treats both the
+  // same right now, but the mode hint is recorded for future logic.
+  const lc = text.toLowerCase();
+  const mode = (lc.startsWith('fix') || lc.includes(' fix ') || lc.includes('error') || lc.includes('broken'))
+    ? 'fix' : 'enhance';
+
+  btn.disabled = true;
+  const oldLabel = btn.textContent;
+  btn.textContent = 'Sending…';
+
+  try {
+    const res = await fetch(`${API_BASE}/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: text, mode }),
+    });
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* not JSON */ }
+    if (!res.ok) {
+      const msg = (body && body.error) || `Server error (${res.status})`;
+      showToast(msg, 'error');
+      return;
+    }
+    // Refinement runs through build_pipeline → fires build_start → UI flips
+    // back to the building state automatically. Just clean up the panel.
+    ta.value = '';
+    hideBuildActions();
+    showToast(`Applying ${mode}: "${text.slice(0, 60)}"`, 'working');
+  } catch (e) {
+    showToast(`Cannot connect — ${e.message || 'network error'}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+  }
+}
+
+// Submit refinement on Enter (Shift+Enter = newline).
+document.addEventListener('DOMContentLoaded', () => {
+  const ta = document.getElementById('refine-input');
+  if (ta) {
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitRefinement();
+      }
+    });
+  }
+});
+
+// ── Decomposition modules badge ──────────────────────
+function showDecomposition(data) {
+  const el = document.getElementById('hud-modules');
+  if (!el) return;
+  const modules = (data && data.modules) || [];
+  const isComposite = data && data.complexity === 'composite' && modules.length > 1;
+  if (!isComposite) {
+    el.classList.remove('visible');
+    el.textContent = '';
+    return;
+  }
+  const names = modules.map(m => m.name).join(' • ');
+  el.textContent = `MODULES: ${names}`;
+  el.title = modules.map(m => `${m.name} — ${m.purpose}`).join('\n');
+  el.classList.add('visible');
+  showToast(`Building ${modules.length} modules: ${names}`, 'working');
+}
+
+function hideDecomposition() {
+  const el = document.getElementById('hud-modules');
+  if (el) {
+    el.classList.remove('visible');
+    el.textContent = '';
+  }
 }
 
 // ── Build ETA badge ──────────────────────────────────

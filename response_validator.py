@@ -386,6 +386,11 @@ def validate_route(expected: Dict[str, Any], base_url: str, timeout: float = 5.0
     sample_json = None
     if expected.get('accepts_json'):
         sample_json = {k: f"test_{k}" for k in expected.get('required_keys', [])}
+    # Heuristic: if this is a write endpoint but no explicit accepts_json was parsed,
+    # send a minimal JSON body (common APIs expect fields like `name`). This helps
+    # validate generated backends even when the Architect spec is terse.
+    if method in ('POST', 'PUT') and sample_json is None:
+        sample_json = {'name': 'test-item'}
 
     try:
         if method == 'GET':

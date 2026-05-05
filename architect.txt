@@ -1,2 +1,2 @@
-- GET /weather - returns JSON {"temp": number, "condition": string}
-- GET /weather
+- POST /todos - accepts JSON and returns 201
+- GET /todos - returns JSON

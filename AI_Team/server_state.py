@@ -77,3 +77,6 @@ def reset_build_state_for_new_request():
     # idle doesn't show a stale countdown.
     build_state.pop("started_at", None)
     build_state.pop("eta_seconds", None)
+    build_state.pop("modules", None)
+    build_state.pop("recommendations", None)
+    build_state.pop("first_error", None)

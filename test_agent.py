@@ -22,7 +22,11 @@ def generate_runtime_scenarios(schema: List[Dict[str, Any]], base_path: str = ''
             get_route = path_map.get(path)
             if get_route and get_route.get('method', 'GET') == 'GET':
                 # build a scenario: POST then GET, expect JSON with required keys
-                post_sample = {k: f"auto_{k}" for k in r.get('required_keys', [])}
+                req_keys = r.get('required_keys', [])
+                if not req_keys:
+                    post_sample = {'name': 'auto_name'}
+                else:
+                    post_sample = {k: f"auto_{k}" for k in req_keys}
                 scenario = [
                     {'type': 'request', 'method': 'POST', 'path': path, 'json': post_sample},
                     {'type': 'request', 'method': 'GET', 'path': path, 'expect_json': True, 'required_keys': get_route.get('required_keys', [])}
@@ -52,7 +56,11 @@ def generate_runtime_scenarios(schema: List[Dict[str, Any]], base_path: str = ''
                     break
             if post_path:
                 post_info = path_map[post_path]
-                post_sample = {k: f"auto_{k}" for k in post_info.get('required_keys', [])}
+                post_req = post_info.get('required_keys', [])
+                if not post_req:
+                    post_sample = {'name': 'auto_name'}
+                else:
+                    post_sample = {k: f"auto_{k}" for k in post_req}
                 if r.get('method') == 'PUT':
                     scenario = [
                         {'type': 'request', 'method': 'POST', 'path': post_path, 'json': post_sample},

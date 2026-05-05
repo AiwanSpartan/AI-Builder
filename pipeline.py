@@ -31,7 +31,7 @@ def run_api_pipeline(base_url: str = 'http://localhost:8000', log_path: Optional
 
     If `log_path` is provided, stdout/stderr will be written to that file.
     """
-    cmd = f'"{PYTHON}" "{os.path.join(PROJECT_ROOT, "repair_loop.py")}"'
+    cmd = f'"{PYTHON}" "{os.path.join(PROJECT_ROOT, "repair_loop.py")}" "{base_url}"'
     if log_path:
         with open(log_path, 'wb') as fh:
             proc = subprocess.run(cmd, shell=True, stdout=fh, stderr=subprocess.STDOUT)
@@ -56,7 +56,19 @@ def run_game_pipeline():
 def _write_architect(requirements: list, path: str):
     with open(path, 'w', encoding='utf-8') as f:
         for line in requirements:
-            f.write(f"- {line}\n")
+            out = line
+            # if no descriptive '-' part present, add a minimal default
+            if ' - ' not in line:
+                m = re.match(r"^(GET|POST|PUT|DELETE)\s+(/[^\s]*)", line, re.I)
+                if m:
+                    method = m.group(1).upper()
+                    if method == 'GET':
+                        out = f"{line} - returns JSON"
+                    elif method == 'POST':
+                        out = f"{line} - accepts JSON and returns 201"
+                    else:
+                        out = f"{line} - returns JSON"
+            f.write(f"- {out}\n")
 
 
 def _parse_requirement_line(line: str):
@@ -85,6 +97,17 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
         if parsed:
             routes.append(parsed)
 
+    # Preserve route order but avoid duplicate handlers for the same method/path.
+    deduped = []
+    seen = set()
+    for rt in routes:
+        key = (rt['method'], rt['path'])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(rt)
+    routes = deduped
+
     tpl_lines = [
         "from http.server import BaseHTTPRequestHandler, HTTPServer",
         "import json",
@@ -105,21 +128,37 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
 
     for rt in routes:
         if rt['method'] == 'GET':
-            lines = [
-                f"        if path == '{rt['path']}':",
-            ]
+            lines = [f"        if path == '{rt['path']}':"]
+            # return stored items for this path; if no stored items, optionally return a sample
+            # object when explicit keys are provided.
             if rt['keys']:
-                # variant controls whether result is top-level object, wrapped, or list
-                sample_obj = {k: (123 if k.lower().startswith('id') else k + '_sample') for k in rt['keys']}
+                def sample_value_for(k):
+                    kl = k.lower()
+                    if kl.startswith('id'):
+                        return 123
+                    if 'temp' in kl or kl == 'temp':
+                        return 21
+                    if any(x in kl for x in ('count', 'num', 'number', 'qty')):
+                        return 1
+                    if any(x in kl for x in ('price', 'amount', 'total')):
+                        return 0.0
+                    if kl.startswith('is') or kl.startswith('has') or kl.startswith('flag'):
+                        return True
+                    return k + '_sample'
+
+                sample_obj = {k: sample_value_for(k) for k in rt['keys']}
                 if variant == 0:
                     payload = json.dumps(sample_obj)
                 elif variant == 1:
                     payload = json.dumps({'item': sample_obj})
                 else:
                     payload = json.dumps([sample_obj])
-                lines.append(f"            self._send(200, {payload})")
+                # prefer stored items if present, else return the sample payload
+                lines.append(f"            self._send(200, items.get('{rt['path']}', {payload}))")
+                lines.append("            return")
             else:
-                lines.append("            self._send(200, {'status':'ok'})")
+                lines.append(f"            self._send(200, items.get('{rt['path']}', []))")
+                lines.append("            return")
             tpl_lines.extend(lines)
 
     tpl_lines.extend([
@@ -137,7 +176,7 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
 
     for rt in routes:
         if rt['method'] == 'POST':
-            tpl_lines.extend([
+            post_lines = [
                 f"        if path == '{rt['path']}':",
                 "            key = path",
                 "            cnt = counters.get(key, 0) + 1",
@@ -152,10 +191,12 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
                  "            self._send(201, {'success': True, 'data': item})" if variant == 1 else
                  "            self._send(201, [item])"),
                 "            return",
-            ])
+            ]
+            tpl_lines.extend(post_lines)
 
     tpl_lines.extend([
         "        self._send(404, 'Not Found', 'text/plain')",
+        "import sys, os",
         "def run(port: int = 8000):",
         "    server = HTTPServer(('0.0.0.0', port), Handler)",
         "    print(f'Serving on http://0.0.0.0:{port}')",
@@ -165,7 +206,9 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
         "        print('Shutting down')",
         "        server.server_close()",
         "if __name__ == '__main__':",
-        "    run()",
+        "    import sys, os",
+        "    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', 8000))",
+        "    run(port)",
     ])
 
     with open(out_path, 'w', encoding='utf-8') as f:
@@ -197,13 +240,20 @@ def run_phased_builder(prompt: str, base_url: str = 'http://localhost:8000', max
         print(f'Build attempt {attempt+1}/{max_retries} using variant={variant}')
         build_backend_app(requirements, gen_app, variant=variant)
         print('Generated backend at', gen_app)
+        # pick a free port to avoid conflicts and start the generated app on it
+        import socket
+        s = socket.socket()
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+        s.close()
+        base = f'http://127.0.0.1:{port}'
         # start the generated app and capture its output to a per-variant log
-        proc = subprocess.Popen(f'"{PYTHON}" "{gen_app}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen([PYTHON, gen_app, str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log_file = os.path.join(reports_dir, f'pipeline_variant_{ts}_v{variant}.txt')
         try:
             time.sleep(1.0 + 0.5 * attempt)
-            # run the validator/repair loop and capture its output
-            rc = run_api_pipeline(base_url, log_path=log_file)
+            # run the validator/repair loop against the generated app and capture its output
+            rc = run_api_pipeline(base, log_path=log_file)
             last_rc = rc
             attempts.append({'variant': variant, 'rc': rc, 'log': log_file})
             if rc == 0:
