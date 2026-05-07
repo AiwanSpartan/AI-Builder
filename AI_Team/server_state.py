@@ -1,5 +1,6 @@
 """Application state and websocket broadcasting helpers."""
 
+import collections
 import json
 import time
 
@@ -30,6 +31,37 @@ build_state = {
     "output": {"plan": "", "code": "", "tests": "", "review": ""},
     "log": [],
 }
+
+# Short rolling buffer of human-readable build events the NPCs can reference
+# in chat. Capped so older items get evicted automatically — the goal is
+# "what just happened?" awareness, not a permanent history.
+_RECENT_EVENTS_MAX = 8
+_recent_events = collections.deque(maxlen=_RECENT_EVENTS_MAX)
+
+
+def record_event(text):
+    """Append a kid-friendly description of something that just happened in
+    the build pipeline (e.g. "Bob finished the planning"). Used by the
+    NPC chat layer so workers can answer "what's going on?" with real,
+    pipeline-aware context instead of generic chatter."""
+    if not text:
+        return
+    clean = " ".join(str(text).split())[:160]
+    if not clean:
+        return
+    _recent_events.append({"time": time.strftime("%H:%M:%S"), "text": clean})
+
+
+def get_recent_events(limit=5):
+    """Return the most recent events, newest last, as a list of dicts."""
+    if limit <= 0:
+        return []
+    items = list(_recent_events)
+    return items[-limit:]
+
+
+def clear_recent_events():
+    _recent_events.clear()
 
 
 def broadcast(event, data):
@@ -80,3 +112,5 @@ def reset_build_state_for_new_request():
     build_state.pop("modules", None)
     build_state.pop("recommendations", None)
     build_state.pop("first_error", None)
+    # Fresh build → fresh event memory so NPCs don't reference last build's history.
+    clear_recent_events()

@@ -81,7 +81,7 @@ def _parse_requirement_line(line: str):
     keys = []
     if brace:
         body = brace.group(1)
-        items = re.findall(r'"([^"]+)"|\b(\w+)\b', body)
+        items = re.findall(r'"([^\"]+)"|\b(\w+)\b', body)
         for a, b in items:
             k = a or b
             if k.lower() in ('number', 'string', 'int', 'float', 'bool'):
@@ -129,8 +129,6 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
     for rt in routes:
         if rt['method'] == 'GET':
             lines = [f"        if path == '{rt['path']}':"]
-            # return stored items for this path; if no stored items, optionally return a sample
-            # object when explicit keys are provided.
             if rt['keys']:
                 def sample_value_for(k):
                     kl = k.lower()
@@ -153,7 +151,6 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
                     payload = json.dumps({'item': sample_obj})
                 else:
                     payload = json.dumps([sample_obj])
-                # prefer stored items if present, else return the sample payload
                 lines.append(f"            self._send(200, items.get('{rt['path']}', {payload}))")
                 lines.append("            return")
             else:
@@ -186,7 +183,6 @@ def build_backend_app(requirements: list, out_path: str, variant: int = 0):
                 "            arr = items.get(key, [])",
                 "            arr.append(item)",
                 "            items[key] = arr",
-                # variant controls POST response shape
                 ("            self._send(201, {'success': True, 'item': item})" if variant == 0 else
                  "            self._send(201, {'success': True, 'data': item})" if variant == 1 else
                  "            self._send(201, [item])"),
@@ -229,7 +225,6 @@ def run_phased_builder(prompt: str, base_url: str = 'http://localhost:8000', max
     gen_app = os.path.join(PROJECT_ROOT, 'generated_app.py')
 
     last_rc = 1
-    # Try multiple variants to increase chance of matching expected shapes
     attempts = []
     reports_dir = os.path.join(PROJECT_ROOT, 'test_reports')
     os.makedirs(reports_dir, exist_ok=True)
@@ -240,25 +235,21 @@ def run_phased_builder(prompt: str, base_url: str = 'http://localhost:8000', max
         print(f'Build attempt {attempt+1}/{max_retries} using variant={variant}')
         build_backend_app(requirements, gen_app, variant=variant)
         print('Generated backend at', gen_app)
-        # pick a free port to avoid conflicts and start the generated app on it
         import socket
         s = socket.socket()
         s.bind(('127.0.0.1', 0))
         port = s.getsockname()[1]
         s.close()
         base = f'http://127.0.0.1:{port}'
-        # start the generated app and capture its output to a per-variant log
         proc = subprocess.Popen([PYTHON, gen_app, str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log_file = os.path.join(reports_dir, f'pipeline_variant_{ts}_v{variant}.txt')
         try:
             time.sleep(1.0 + 0.5 * attempt)
-            # run the validator/repair loop against the generated app and capture its output
             rc = run_api_pipeline(base, log_path=log_file)
             last_rc = rc
             attempts.append({'variant': variant, 'rc': rc, 'log': log_file})
             if rc == 0:
                 print('Variant succeeded')
-                # write a summary report
                 summary = {'prompt': prompt, 'attempts': attempts, 'result': 'success', 'timestamp': ts}
                 summary_path = os.path.join(reports_dir, f'pipeline_variant_report_{ts}.json')
                 with open(summary_path, 'w', encoding='utf-8') as sf:
@@ -279,7 +270,6 @@ def run_phased_builder(prompt: str, base_url: str = 'http://localhost:8000', max
                 except Exception:
                     pass
 
-    # write failure summary
     summary = {'prompt': prompt, 'attempts': attempts, 'result': 'failure', 'timestamp': ts}
     summary_path = os.path.join(reports_dir, f'pipeline_variant_report_{ts}.json')
     with open(summary_path, 'w', encoding='utf-8') as sf:

@@ -21,7 +21,6 @@ def main():
     rv_report = os.path.join(OUT_DIR, f'rv_test_{ts}.txt')
     repair_report = os.path.join(OUT_DIR, f'repair_loop_{ts}.txt')
     sample_proc = None
-    # Prefer launching a generated backend if present (matches architect.txt), otherwise fall back to sample_app.py
     generated_app = os.path.join(os.path.dirname(__file__), 'generated_app.py')
     sample_app = os.path.join(os.path.dirname(__file__), 'sample_app.py')
     to_start = None
@@ -35,7 +34,6 @@ def main():
             if not os.path.exists(py_exec):
                 py_exec = 'python'
             sample_proc = subprocess.Popen([py_exec, to_start], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # give server a moment to start
             time.sleep(0.8)
         except Exception:
             sample_proc = None

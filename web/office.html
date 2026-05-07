@@ -1601,9 +1601,9 @@ body.no-webgl #canvas-container::after {
 
 <!-- Mini-game HUD -->
 <div id="minigame-hud">
-  <div id="mg-title">COINS + GAMES</div>
+  <div id="mg-title">SITE SCORE</div>
   <div id="mg-score">0</div>
-  <div id="mg-hint">SPACE jump • drag near hoop</div>
+  <div id="mg-hint">drag wrecking ball • run cones • E at sawhorse</div>
 </div>
 
 <!-- Basketball power meter (shown while dragging) -->
@@ -1701,9 +1701,22 @@ const BACKEND_RUN_HINT = 'python AI_Team/builder_server.py';
 //  SCENE SETUP
 // ════════════════════════════════════════════════════
 
+// ── Construction-site palette ──────────────────────
+// Light overcast sky, tan dirt floor, safety-orange + caution-yellow accents.
+// Centralised so theme tweaks touch one place instead of 30.
+const SITE_SKY     = 0xb6c4d4;  // pale overcast sky-grey
+const SITE_DIRT    = 0xa08458;  // tan compacted dirt
+const SITE_DIRT_LO = 0x806845;  // darker grid line
+const SITE_CONCRETE  = 0x9a9a92;
+const SITE_ORANGE  = 0xea5b1c;  // safety / cone orange
+const SITE_YELLOW  = 0xf2c200;  // caution yellow
+const SITE_WOOD    = 0x8b6f47;  // workbench top
+const SITE_WOOD_LO = 0x5e4a30;  // wood shadow
+const SITE_STEEL   = 0x4a4a52;  // metal frame
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x030711);
-scene.fog = new THREE.FogExp2(0x030711, 0.007);
+scene.background = new THREE.Color(SITE_SKY);
+scene.fog = new THREE.FogExp2(SITE_SKY, 0.0045);
 
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 300);
 camera.position.set(0, 18, 34);
@@ -1736,11 +1749,12 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-// ── Lights ─────────────────────────────────────────
-const ambient = new THREE.AmbientLight(0x6688bb, 3.5);
+// ── Lights (outdoor daylight) ────────────────────────
+// Warm ambient + bright sun simulates an overcast-but-lit construction day.
+const ambient = new THREE.AmbientLight(0xe8d8b4, 2.6);
 scene.add(ambient);
 
-const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+const sun = new THREE.DirectionalLight(0xfff1cf, 2.3);
 sun.position.set(15, 30, 15);
 sun.castShadow = true;
 sun.shadow.mapSize.width = 2048;
@@ -1753,77 +1767,111 @@ sun.shadow.camera.top = 30;
 sun.shadow.camera.bottom = -30;
 scene.add(sun);
 
-// Rim light from back
-const rimLight = new THREE.DirectionalLight(0x0a2040, 0.6);
-rimLight.position.set(-10, 10, -20);
-scene.add(rimLight);
+// Cool sky-fill from the opposite side so shadows aren't pure black.
+const skyFill = new THREE.DirectionalLight(0xb6c4d4, 0.55);
+skyFill.position.set(-10, 18, -18);
+scene.add(skyFill);
 
 
-// ── Floor ───────────────────────────────────────────
+// ── Floor (compacted dirt) ──────────────────────────
 const floorGeo = new THREE.PlaneGeometry(80, 60);
 const floorMat = new THREE.MeshStandardMaterial({
-  color: 0x0d1e38, roughness: 0.85, metalness: 0.15
+  color: SITE_DIRT, roughness: 0.97, metalness: 0.02
 });
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 scene.add(floor);
 
-// Grid
-const grid = new THREE.GridHelper(80, 40, 0x0a1828, 0x080e1e);
+// Subtle grid stays — reads as grading lines on the dirt pad.
+const grid = new THREE.GridHelper(80, 40, SITE_DIRT_LO, 0x6b5a3c);
+grid.material.opacity = 0.45;
+grid.material.transparent = true;
 scene.add(grid);
 
-// ── Walls ───────────────────────────────────────────
-const wallMat = new THREE.MeshStandardMaterial({
-  color: 0x0d1e3a, transparent: true, opacity: 0.85,
-  roughness: 0.3, metalness: 0.4
+// ── Perimeter safety barriers ───────────────────────
+// Striped orange-and-white precast barriers replace office walls. They sit at
+// the same coordinates so the build's collision boxes still line up.
+const barrierBaseMat = new THREE.MeshStandardMaterial({
+  color: SITE_ORANGE, roughness: 0.7, metalness: 0.05
 });
-const wallDefs = [
-  [0, 4, -20, 80, 8, 0.12],
-  [0, 4,  20, 80, 8, 0.12],
-  [-24, 4, 0, 0.12, 8, 60],
-  [ 24, 4, 0, 0.12, 8, 60],
-];
-wallDefs.forEach(([x,y,z,w,h,d]) => {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), wallMat);
-  m.position.set(x,y,z);
-  scene.add(m);
+const barrierStripeMat = new THREE.MeshStandardMaterial({
+  color: 0xf6f6f6, roughness: 0.9, metalness: 0.0
 });
+function _placeBarrier(cx, cz, length, alongX) {
+  // Build a row of segmented jersey-barriers along an axis.
+  const seg = 4.0;       // each barrier ~4 units long
+  const gap = 0.15;
+  const h = 1.2;
+  const w = 0.6;
+  const count = Math.max(1, Math.floor(length / (seg + gap)));
+  for (let i = 0; i < count; i++) {
+    const offset = (i - (count - 1) / 2) * (seg + gap);
+    const base = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? seg : w, h, alongX ? w : seg),
+      barrierBaseMat,
+    );
+    base.position.set(alongX ? cx + offset : cx, h / 2, alongX ? cz : cz + offset);
+    base.castShadow = true; base.receiveShadow = true;
+    scene.add(base);
+    // Top white reflective stripe
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(alongX ? seg * 0.92 : w * 1.02, 0.16, alongX ? w * 1.02 : seg * 0.92),
+      barrierStripeMat,
+    );
+    stripe.position.set(alongX ? cx + offset : cx, h - 0.05, alongX ? cz : cz + offset);
+    scene.add(stripe);
+  }
+}
+_placeBarrier(0,   -20, 80, true);   // back perimeter
+_placeBarrier(0,    20, 80, true);   // front perimeter
+_placeBarrier(-24,  0,  60, false);  // left perimeter
+_placeBarrier( 24,  0,  60, false);  // right perimeter
 
-// Window panels on walls (glowing)
-const winMat = new THREE.MeshBasicMaterial({ color: 0x0a1f3a, transparent: true, opacity: 0.4 });
-[[-16,4,-19.9],[0,4,-19.9],[16,4,-19.9]].forEach(([x,y,z]) => {
-  const w = new THREE.Mesh(new THREE.PlaneGeometry(5,3.5), winMat);
-  w.position.set(x,y,z);
-  scene.add(w);
-  // Window glow
-  const wl = new THREE.PointLight(0x1a3a6a, 0.4, 12);
-  wl.position.set(x, y, z+1);
-  scene.add(wl);
+// ── Caution-tape strip across the back ──────────────
+const tapeMat = new THREE.MeshBasicMaterial({
+  color: SITE_YELLOW, side: THREE.DoubleSide,
 });
-
-// ── Ceiling ─────────────────────────────────────────
-const ceiling = new THREE.Mesh(
-  new THREE.PlaneGeometry(80, 60),
-  new THREE.MeshStandardMaterial({ color: 0x040a16, roughness: 0.95 })
-);
-ceiling.rotation.x = Math.PI / 2;
-ceiling.position.y = 8;
-scene.add(ceiling);
-
-// ── Ceiling lights ──────────────────────────────────
-function addCeilingLight(x, z) {
-  const fixture = new THREE.Mesh(
-    new THREE.BoxGeometry(0.6, 0.05, 1.2),
-    new THREE.MeshBasicMaterial({ color: 0xaaccee })
+[-16, -8, 0, 8, 16].forEach((x) => {
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, 2.0, 8),
+    new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.6 }),
   );
-  fixture.position.set(x, 7.92, z);
-  scene.add(fixture);
-  const pl = new THREE.PointLight(0x5588cc, 0.7, 14);
-  pl.position.set(x, 7.6, z);
+  post.position.set(x, 1.0, -18.5);
+  post.castShadow = true;
+  scene.add(post);
+});
+const tape = new THREE.Mesh(new THREE.PlaneGeometry(34, 0.16), tapeMat);
+tape.position.set(0, 1.7, -18.5);
+scene.add(tape);
+
+// ── Floodlights on tall poles (replaces ceiling lights) ──
+function addSiteFloodlight(x, z) {
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.14, 6.0, 8),
+    new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.7 }),
+  );
+  pole.position.set(x, 3.0, z);
+  pole.castShadow = true;
+  scene.add(pole);
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9, 0.55, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x202225, roughness: 0.45, metalness: 0.65 }),
+  );
+  head.position.set(x, 6.1, z);
+  head.rotation.y = Math.atan2(-x, -z) * 0.4; // angled inward
+  scene.add(head);
+  const lens = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.78, 0.45),
+    new THREE.MeshBasicMaterial({ color: 0xfff4cc }),
+  );
+  lens.position.copy(head.position).add(new THREE.Vector3(0, 0, 0.21));
+  scene.add(lens);
+  const pl = new THREE.PointLight(0xfff1cf, 0.85, 18);
+  pl.position.set(x, 5.7, z);
   scene.add(pl);
 }
-[-16,-8,0,8,16].forEach(x => [-10,-2,6].forEach(z => addCeilingLight(x, z)));
+[[-18, -16], [18, -16], [-18, 14], [18, 14]].forEach(([x, z]) => addSiteFloodlight(x, z));
 
 // ── Agent config ────────────────────────────────────
 const AGENTS = [
@@ -1860,7 +1908,13 @@ const KAYKIT_MODELS = {
 const KAYKIT_TARGET_HEIGHT = 1.7;
 // Animation rigs from the pack — same skeleton as every Adventurer model.
 const KAYKIT_RIG_BASE = 'assets/KayKit_Adventurers_2.0_FREE/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium';
-const KAYKIT_RIG_GENERAL = `${KAYKIT_RIG_BASE}/Rig_Medium_General.glb`;
+// KayKit splits its anim library across two .glb files: General has combat /
+// cast / cheer / damage clips; MovementBasic has Idle / Walk / Run. We load
+// BOTH and merge their clips so every NPC has a full action bank.
+const KAYKIT_RIG_FILES = [
+  `${KAYKIT_RIG_BASE}/Rig_Medium_General.glb`,
+  `${KAYKIT_RIG_BASE}/Rig_Medium_MovementBasic.glb`,
+];
 
 const _gltfLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) ? new THREE.GLTFLoader() : null;
 const _kaykitCache = {};      // model name → promise resolving to GLTF scene
@@ -1878,23 +1932,258 @@ function _loadKaykitModel(modelName) {
 }
 
 function _loadKaykitRigClips() {
+  /* Load every rig file in parallel and concatenate their clip arrays so the
+     character has both movement clips (Idle/Walk/Run) and action clips
+     (Attack/Cast/Cheer/Damage) available. */
   if (!_gltfLoader) return Promise.resolve([]);
   if (_kaykitRigClipsPromise) return _kaykitRigClipsPromise;
-  _kaykitRigClipsPromise = new Promise((resolve) => {
+  const loadOne = (url) => new Promise((resolve) => {
     _gltfLoader.load(
-      KAYKIT_RIG_GENERAL,
+      url,
       (gltf) => resolve(gltf.animations || []),
       undefined,
       (err) => {
-        console.warn('[KayKit] Rig animations failed to load:', err);
+        console.warn(`[KayKit] Rig file failed to load (${url}):`, err);
         resolve([]);
       },
     );
   });
+  _kaykitRigClipsPromise = Promise.all(KAYKIT_RIG_FILES.map(loadOne))
+    .then((clipsArrays) => {
+      const merged = [].concat(...clipsArrays);
+      const names = merged.map(c => c.name);
+      console.log(`[KayKit] Rig clips loaded (${merged.length} total): ${names.slice(0, 12).join(', ')}${names.length > 12 ? '…' : ''}`);
+      return merged;
+    });
   return _kaykitRigClipsPromise;
 }
 
+// ── NPC state machine ────────────────────────────────────────────────
+// Each agent's KayKit character is driven by a tiny FSM that maps backend
+// pipeline events to character animations. We keep the model small (5 states)
+// so the visuals stay legible under fast event bursts.
+const NPC_STATE = {
+  IDLE:      'idle',       // resting / breathing
+  WORKING:   'work',       // active animation while their pipeline phase runs
+  ERROR:     'error_react',// brief hit/flinch when their phase errored
+  CELEBRATE: 'celebrate',  // fired on successful build_complete
+  TALK:      'talk',       // reserved — currently aliased to idle
+};
+
+// Registry: agentId -> {mixer, actions, currentAction, currentState}
+const _kaykitNpcs = {};
+
+// Pattern lists are tried in order; the first clip whose name contains any
+// pattern wins. We claim clips in the order: idle, work, error_react,
+// celebrate — so idle gets first pick. The dedup guard in
+// _buildActionsForCharacter prevents two states from sharing one clip.
+//
+// Hints cover three KayKit pack variants:
+//  - Combat-rig packs (Rig_Medium_Sword/Spell/Bow): attack/cast/spell/chop
+//  - General rig (Rig_Medium_General + MovementBasic): interact/pickup/idle_b
+//  - Skeleton/zombie packs: hit/spawn
+const _STATE_CLIP_HINTS = {
+  idle:        ['idle_a',  'idle ',   'breathing', 'stand', 'idle'],
+  // For work, we prefer combat clips when available, then fall back to the
+  // most "active-looking" non-combat motions: Interact (examines/leans),
+  // PickUp (bends to grab), and Idle_B (the fidgety alt-idle).
+  work:        ['attack',  'casting', 'cast',    'punch',  'swing',  'spell',
+                'shoot',   'chop',    'slice',
+                'interact','pickup',  'pick_up', 'use_item', 'idle_b'],
+  error_react: ['damage',  'hurt',    'flinch',  'react',  'hit'],
+  celebrate:   ['cheer',   'wave',    'celebrate','win',   'jump'],
+};
+
+function _findClipByHints(clips, hints) {
+  if (!clips || !clips.length) return null;
+  const lower = (s) => (s || '').toLowerCase();
+  const names = clips.map((c) => lower(c.name));
+  for (const want of hints) {
+    const idx = names.findIndex((n) => n.includes(want));
+    if (idx !== -1) return clips[idx];
+  }
+  return null;
+}
+
 function _pickIdleClip(clips) {
+  return _findClipByHints(clips, _STATE_CLIP_HINTS.idle) ||
+    (clips && clips.length ? clips[0] : null);
+}
+
+function _buildActionsForCharacter(mixer, clips) {
+  /* Returns a {state -> AnimationAction} map. Missing states are simply
+     absent — setNpcState falls back to idle when the requested state isn't
+     available on this character's clip set. We track which clips have
+     already been claimed so two states never end up sharing one action
+     (which would make the underlying mixer.clipAction call return the same
+     instance and confuse the FSM). */
+  const actions = {};
+  const stateForClip = {};
+
+  // Order matters: idle is bound first, then the more specific states. This
+  // way a generic "stand" clip can't accidentally claim "work".
+  const order = ['idle', 'work', 'error_react', 'celebrate'];
+
+  for (const state of order) {
+    const hints = _STATE_CLIP_HINTS[state] || [];
+    let clip = null;
+    for (const want of hints) {
+      const candidate = clips.find((c) => {
+        const n = (c.name || '').toLowerCase();
+        return n.includes(want) && !stateForClip[c.name];
+      });
+      if (candidate) { clip = candidate; break; }
+    }
+    if (!clip) continue;
+    stateForClip[clip.name] = state;
+    const action = mixer.clipAction(clip);
+    if (state === 'error_react') {
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+    } else if (state === 'celebrate') {
+      action.setLoop(THREE.LoopRepeat, 3);
+    } else {
+      action.setLoop(THREE.LoopRepeat, Infinity);
+    }
+    actions[state] = action;
+    actions['_clip_' + state] = clip.name; // for diagnostic logging
+  }
+  return actions;
+}
+
+function setNpcState(agentId, requestedState, opts) {
+  /* Crossfade an NPC to a new animation state. Falls back to IDLE if the
+     character doesn't have a clip for the requested state. */
+  const npc = _kaykitNpcs[agentId];
+  if (!npc) {
+    // Character GLB still loading. Note it for debugging — state changes
+    // that fire before the GLB resolves are silently lost otherwise.
+    console.log(`[KayKit] setNpcState(${agentId}, ${requestedState}) — npc not yet loaded`);
+    return;
+  }
+  const fade = (opts && typeof opts.fade === 'number') ? opts.fade : 0.3;
+
+  let newState = requestedState;
+  let target = npc.actions[newState];
+  let fellBack = false;
+  if (!target) {
+    fellBack = true;
+    newState = NPC_STATE.IDLE;
+    target = npc.actions[NPC_STATE.IDLE];
+  }
+  if (!target) {
+    console.warn(`[KayKit] ${agentId}: no animations at all — cannot enter ${requestedState}`);
+    return;
+  }
+
+  if (target === npc.currentAction && npc.currentState === newState) return;
+
+  // Make sure the previous action is still active for crossFadeFrom to see it.
+  const prev = npc.currentAction;
+
+  target.enabled = true;
+  target.reset();
+  // Speed jitter: idle is calm; work runs slightly faster so the contrast
+  // with idle is perceptible. Celebrate is full speed so the wave/cheer
+  // reads cleanly.
+  let scale;
+  if (newState === NPC_STATE.WORKING) scale = 1.05 + Math.random() * 0.25;
+  else if (newState === NPC_STATE.CELEBRATE) scale = 1.0;
+  else if (newState === NPC_STATE.ERROR) scale = 1.1;
+  else scale = 0.9 + Math.random() * 0.25; // idle
+  target.setEffectiveTimeScale(scale);
+  // Explicit weight so we don't depend on reset()'s default of 0 plus the
+  // crossfade ramp — if the crossfade source is missing for any reason,
+  // the new action should still be visible.
+  target.setEffectiveWeight(1);
+
+  if (prev && prev !== target) {
+    target.crossFadeFrom(prev, fade, false);
+  }
+  target.play();
+
+  npc.currentAction = target;
+  npc.currentState = newState;
+  const clipName = target.getClip ? target.getClip().name : '?';
+  const note = fellBack ? ` (fallback from ${requestedState})` : '';
+  console.log(`[KayKit] ${agentId}: → ${newState}${note}, clip="${clipName}", scale=${scale.toFixed(2)}`);
+}
+
+// Map a backend agent.state to an NPC animation state. Done/idle both rest;
+// working triggers the active anim; error triggers a brief flinch.
+const _AGENT_STATE_TO_NPC_STATE = {
+  idle:    NPC_STATE.IDLE,
+  done:    NPC_STATE.IDLE,
+  working: NPC_STATE.WORKING,
+  error:   NPC_STATE.ERROR,
+};
+
+function applyAgentStateToNpc(agentId, agentState) {
+  const target = _AGENT_STATE_TO_NPC_STATE[agentState] || NPC_STATE.IDLE;
+  // Mark whether the backend is actively driving this NPC's state. The idle
+  // work-pulse uses this flag to know when to back off — it should never
+  // override real WORKING / ERROR coming from the pipeline.
+  const npc = _kaykitNpcs[agentId];
+  if (npc) {
+    npc._isAgentDriven = (agentState === 'working' || agentState === 'error');
+  }
+  setNpcState(agentId, target);
+}
+
+// ── Idle work-pulse ─────────────────────────────────────
+// Construction workers don't stand frozen — they fidget with tools, examine
+// blueprints, pick things up. Once an NPC's GLB loads we kick off a loop that
+// periodically (every 6-12 s) plays the WORKING animation for ~1.5 s while
+// the agent is idle, then settles back to IDLE. Backend-driven WORKING /
+// ERROR / CELEBRATE always wins — the pulse only fires on true idle.
+function startIdleWorkPulse(agentId) {
+  function scheduleNext() {
+    const wait = 6000 + Math.random() * 6000;
+    setTimeout(pulse, wait);
+  }
+  function pulse() {
+    const npc = _kaykitNpcs[agentId];
+    if (!npc) return; // character was never loaded
+    // Only fire if we're idle AND the backend isn't currently driving us.
+    if (npc._isAgentDriven || npc.currentState !== NPC_STATE.IDLE) {
+      return scheduleNext();
+    }
+    setNpcState(agentId, NPC_STATE.WORKING, { fade: 0.25 });
+    const dur = 1300 + Math.random() * 700;
+    setTimeout(() => {
+      const npc2 = _kaykitNpcs[agentId];
+      if (npc2 && !npc2._isAgentDriven && npc2.currentState === NPC_STATE.WORKING) {
+        setNpcState(agentId, NPC_STATE.IDLE, { fade: 0.4 });
+      }
+      scheduleNext();
+    }, dur);
+  }
+  // Stagger initial start so all 5 don't pulse on the same frame.
+  setTimeout(scheduleNext, 1500 + Math.random() * 4000);
+}
+
+// World-effect layer: re-tint each agent's existing desk PointLight so the
+// office reads at a glance — blue while that agent is working, red on error,
+// green on done. We modulate color + intensity, not position, so the existing
+// scene layout is unchanged.
+const _NPC_GLOW_PRESETS = {
+  idle:    { color: null,      intensity: 0.35 }, // null = use agent's default color
+  working: { color: 0x38bdf8,  intensity: 0.95 }, // sky blue
+  done:    { color: 0x22c55e,  intensity: 0.65 }, // green
+  error:   { color: 0xef4444,  intensity: 1.10 }, // red
+};
+
+function _setNpcDeskGlow(agentId, agentState) {
+  const npc = (typeof agentNPCs !== 'undefined') ? agentNPCs[agentId] : null;
+  if (!npc || !npc.glow) return;
+  const preset = _NPC_GLOW_PRESETS[agentState] || _NPC_GLOW_PRESETS.idle;
+  const agentDef = AGENTS.find((a) => a.id === agentId);
+  const defaultColor = agentDef ? agentDef.color : 0xffffff;
+  npc.glow.color.setHex(preset.color != null ? preset.color : defaultColor);
+  npc.glow.intensity = preset.intensity;
+}
+
+function _legacyPickIdleClipKept_unused(clips) {
   if (!clips || !clips.length) return null;
   // Prefer a clip with "Idle" or "Stand" in the name; fall back to the first.
   const lower = (n) => (n || '').toLowerCase();
@@ -1951,29 +2240,70 @@ function _attachKaykitTo(npcGroup, agent, proceduralParts, bodyHolder) {
     bodyHolder.add(inst);
     proceduralParts.forEach(p => { if (p) p.visible = false; });
 
-    // Hook up an idle animation. Try the model's own clips first, then fall
-    // back to the shared Rig_Medium_General clips. Both share the rig so the
-    // mixer can drive bones either way.
+    // Build the per-character action bank so we can drive the NPC by state
+    // (idle / work / error_react / celebrate) instead of just looping idle.
+    // We try the model's own clips first; if it has none, we fall back to
+    // the shared Rig_Medium_General clips which target the same skeleton.
     const ownClips = gltf.animations || [];
     const setupMixer = (clips) => {
-      const idle = _pickIdleClip(clips);
-      if (!idle) return;
+      if (!clips || !clips.length) {
+        console.warn(`[KayKit] No animation clips available for ${agent.id}`);
+        return;
+      }
       try {
         const mixer = new THREE.AnimationMixer(inst);
-        const action = mixer.clipAction(idle);
-        // Slight per-agent phase offset so all 5 don't breathe in sync.
-        action.time = (Math.random() * idle.duration);
-        action.play();
+        const actions = _buildActionsForCharacter(mixer, clips);
+        if (!actions.idle) {
+          // Last-ditch: at least play the first clip as idle so the character
+          // doesn't freeze in T-pose.
+          const fallback = mixer.clipAction(clips[0]);
+          fallback.setLoop(THREE.LoopRepeat, Infinity);
+          actions.idle = fallback;
+        }
+        // Register before playing so setNpcState calls during init work.
+        _kaykitNpcs[agent.id] = {
+          mixer,
+          actions,
+          currentAction: null,
+          currentState: null,
+        };
         _kaykitMixers.push(mixer);
+
+        // Start in idle with a random phase offset + speed jitter so all 5
+        // characters don't breathe in lockstep.
+        const idleAction = actions.idle;
+        idleAction.setEffectiveTimeScale(0.9 + Math.random() * 0.25);
+        idleAction.time = Math.random() * (idleAction.getClip().duration || 1);
+        idleAction.play();
+        _kaykitNpcs[agent.id].currentAction = idleAction;
+        _kaykitNpcs[agent.id].currentState = NPC_STATE.IDLE;
+        _kaykitNpcs[agent.id]._isAgentDriven = false;
+        // Required after a SkeletonUtils clone for the first frame to bind.
+        mixer.update(0);
+        // Kick off the periodic idle work-pulse so the worker fidgets with
+        // tools / examines blueprints when nothing else is happening.
+        startIdleWorkPulse(agent.id);
+
+        const stateNames = Object.keys(actions).filter(k => !k.startsWith('_clip_')).join(',');
+        const stateClipMap = Object.keys(actions)
+          .filter(k => !k.startsWith('_clip_'))
+          .map(k => `${k}=${actions['_clip_' + k] || '?'}`)
+          .join(', ');
+        console.log(`[KayKit] ${agent.id} action bank: ${stateNames || 'idle-only'} (${stateClipMap})`);
       } catch (err) {
-        console.warn(`[KayKit] Could not bind idle clip for ${agent.id}:`, err);
+        console.warn(`[KayKit] Could not set up animations for ${agent.id}:`, err);
       }
     };
-    if (ownClips.length) {
-      setupMixer(ownClips);
-    } else {
-      _loadKaykitRigClips().then(setupMixer);
-    }
+    // Always merge the rig clips with whatever the character GLB ships with,
+    // so missing states on either side are filled in. Without this, a model
+    // that has its own Idle but no Cheer would never play celebrate.
+    _loadKaykitRigClips().then((rigClips) => {
+      // De-dupe by name in case both files include the same clip; prefer the
+      // character's own version when there's a collision.
+      const seen = new Set(ownClips.map(c => c.name));
+      const merged = ownClips.concat(rigClips.filter(c => !seen.has(c.name)));
+      setupMixer(merged);
+    });
   }).catch((err) => {
     console.warn(`[KayKit] Failed to load ${modelName} for ${agent.id}:`, err);
     // Procedural body stays visible as the fallback — no further action needed.
@@ -1992,15 +2322,7 @@ function makeNPC(agent, skinColor, hairColor) {
   // Procedural-body fallback parts. Hidden once the KayKit GLB loads.
   const proceduralBody = [];
 
-  // Chair seat
-  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.09, 0.85), darkMat);
-  seat.position.y = 0.52; seat.castShadow = true; g.add(seat);
-  const cback = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.55, 0.07), darkMat);
-  cback.position.set(0, 0.835, -0.39); g.add(cback);
-  [[-0.33,-0.33],[0.33,-0.33],[-0.33,0.33],[0.33,0.33]].forEach(([cx,cz]) => {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.52,0.06), darkMat);
-    leg.position.set(cx, 0.26, cz); g.add(leg);
-  });
+  // No chair — construction workers stand at their workbench.
 
   // Legs — simple boxes
   [-0.08, 0.08].forEach(lx => {
@@ -2091,8 +2413,10 @@ function makeNPC(agent, skinColor, hairColor) {
 
 function makeDesk(agent) {
   const g = new THREE.Group();
-  const deskMat = new THREE.MeshStandardMaterial({ color: 0x0c1a30, roughness: 0.6, metalness: 0.3 });
-  const legMat  = new THREE.MeshStandardMaterial({ color: 0x081020, roughness: 0.5, metalness: 0.5 });
+  // Workbench: timber top with a steel frame underneath. Same dimensions as
+  // the old office desk so the agent positions and collision boxes still fit.
+  const deskMat = new THREE.MeshStandardMaterial({ color: SITE_WOOD, roughness: 0.85, metalness: 0.05 });
+  const legMat  = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.55, metalness: 0.65 });
 
   // Desk top
   const top = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 1.3), deskMat);
@@ -2104,69 +2428,63 @@ function makeDesk(agent) {
     leg.position.set(lx, 0.41, lz); g.add(leg);
   });
 
-  // Monitor body
-  const monBack = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.95,0.07), legMat);
-  monBack.position.set(0, 1.5, -0.42); g.add(monBack);
-  // Monitor stand
-  const mStand = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.32,0.07), legMat);
-  mStand.position.set(0, 0.98, -0.42); g.add(mStand);
-  // Monitor base
-  const mBase = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.04,0.25), legMat);
-  mBase.position.set(0, 0.82, -0.42); g.add(mBase);
+  // ── Workbench tools (replaces the old monitor + screen) ─────────────
+  // Rolled blueprint paper (cyan-tinted cylinder lying on its side)
+  const blueprintMat = new THREE.MeshStandardMaterial({ color: 0x4d7fa8, roughness: 0.9 });
+  const blueprintRoll = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.07, 0.6, 12),
+    blueprintMat,
+  );
+  blueprintRoll.rotation.z = Math.PI / 2;
+  blueprintRoll.position.set(-0.55, 0.93, -0.25);
+  g.add(blueprintRoll);
 
-  // Screen canvas texture — per-role content
-  const screenCanvas = document.createElement('canvas');
-  screenCanvas.width = 256; screenCanvas.height = 160;
-  const screenCtx = screenCanvas.getContext('2d');
-  const screenTex = new THREE.CanvasTexture(screenCanvas);
+  // Yellow hard hat sitting on the bench
+  const hatMat = new THREE.MeshStandardMaterial({
+    color: SITE_YELLOW, roughness: 0.5, metalness: 0.05,
+  });
+  const hatBody = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+    hatMat,
+  );
+  hatBody.position.set(0.55, 0.94, -0.25);
+  g.add(hatBody);
+  const hatBrim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.26, 0.26, 0.03, 16),
+    hatMat,
+  );
+  hatBrim.position.set(0.55, 0.93, -0.25);
+  g.add(hatBrim);
 
-  const _SCREEN_LINES = {
-    architect: ['> SYSTEM DESIGN','[Auth Module]','  |--[API Layer]','  |--[DB Layer]','[Queue Service]','plan: v2.4-draft'],
-    coder:     ['def process(data):','  result = []','  for x in data:','    result.append(x)','  return result','# TODO: optimize'],
-    debugger:  ['ERROR line 42:','  NullRef: obj','  stack: main()','  >> checking...','  fix: add guard','[FIXED] re-test'],
-    tester:    ['[PASS] auth_test','[PASS] api_test','[FAIL] db_conn','  expected: 200','  got: 500','running: 3/7...'],
-    reviewer:  ['+ add validation','- rm dead code','! refactor loop','+ type safety','- unused import','LGTM after fix'],
-  };
+  // Hammer — wooden handle + steel head, lying flat
+  const hammerHandleMat = new THREE.MeshStandardMaterial({
+    color: SITE_WOOD_LO, roughness: 0.9, metalness: 0.04,
+  });
+  const hammerHeadMat = new THREE.MeshStandardMaterial({
+    color: SITE_STEEL, roughness: 0.4, metalness: 0.85,
+  });
+  const handle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.025, 0.025, 0.55, 8),
+    hammerHandleMat,
+  );
+  handle.rotation.z = Math.PI / 2;
+  handle.position.set(0.05, 0.89, 0.05);
+  g.add(handle);
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.08, 0.08),
+    hammerHeadMat,
+  );
+  head.position.set(0.32, 0.91, 0.05);
+  g.add(head);
 
-  function _drawScreen(agentId, cursor) {
-    const lines = _SCREEN_LINES[agentId] || _SCREEN_LINES.coder;
-    const r = (agent.color >> 16) & 0xff;
-    const gv = (agent.color >> 8) & 0xff;
-    const b  = agent.color & 0xff;
-    screenCtx.fillStyle = '#050d1a';
-    screenCtx.fillRect(0, 0, 256, 160);
-    screenCtx.font = '12px monospace';
-    lines.forEach((line, i) => {
-      const alpha = 0.45 + (i % 2) * 0.25;
-      const col = line.startsWith('+') ? `rgba(34,197,94,${alpha})` :
-                  line.startsWith('-') ? `rgba(239,68,68,${alpha})` :
-                  line.startsWith('[PASS]') ? `rgba(34,197,94,${alpha})` :
-                  line.startsWith('[FAIL]') ? `rgba(239,68,68,${alpha})` :
-                  line.startsWith('ERROR') ? `rgba(239,68,68,${alpha})` :
-                  `rgba(${r},${gv},${b},${alpha})`;
-      screenCtx.fillStyle = col;
-      screenCtx.fillText(line, 8, 20 + i * 22);
-    });
-    if (cursor) {
-      screenCtx.fillStyle = `rgba(${r},${gv},${b},0.9)`;
-      screenCtx.fillRect(8, 148, 8, 2);
-    }
-    screenTex.needsUpdate = true;
-  }
+  // Keyboard slot is gone; keep a wooden plank stub where it was so the
+  // bench still looks busy from the front.
+  const plank = new THREE.Mesh(
+    new THREE.BoxGeometry(0.85, 0.03, 0.32), hammerHandleMat,
+  );
+  plank.position.set(-0.55, 0.875, 0.22); g.add(plank);
 
-  _drawScreen(agent.id, false);
-
-  const screenGeo = new THREE.PlaneGeometry(1.3, 0.78);
-  const screenMat = new THREE.MeshBasicMaterial({ map: screenTex, transparent: true, opacity: 0.88, side: THREE.DoubleSide });
-  const screen = new THREE.Mesh(screenGeo, screenMat);
-  screen.position.set(0, 1.5, -0.375);
-  g.add(screen);
-
-  // Keyboard
-  const kb = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.025,0.32), deskMat);
-  kb.position.set(0, 0.875, 0.22); g.add(kb);
-
-  // Coffee cup
+  // Coffee mug (kept — workers drink coffee too)
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.05,0.12,8), deskMat);
   cup.position.set(0.9, 0.895, 0.2); g.add(cup);
   const cupTop = new THREE.Mesh(
@@ -2175,7 +2493,13 @@ function makeDesk(agent) {
   );
   cupTop.position.set(0.9, 0.96, 0.2); g.add(cupTop);
 
-  return { group: g, screenMat, screenCanvas, screenTex, drawScreen: _drawScreen };
+  // Stub the screen interface so the animate-loop callers (which still set
+  // screenMat.opacity and call drawScreen on every frame) don't crash now
+  // that there's no actual screen mesh.
+  const screenMat = { opacity: 0 };
+  const drawScreen = () => {};
+
+  return { group: g, screenMat, drawScreen };
 }
 
 // Screen scan line texture
@@ -2286,36 +2610,43 @@ AGENTS.forEach((agent, i) => {
 
 // ── Extra furniture ──────────────────────────────────
 
-// Server rack (back-right)
-function makeServerRack(x, z) {
+// Stack of supply crates (back-right) — replaces the old server racks. Same
+// physical footprint so any layout/collision boxes downstream still hold.
+function makeCrateStack(x, z) {
   const g = new THREE.Group();
-  const rackMat = new THREE.MeshStandardMaterial({ color: 0x060e1c, roughness: 0.4, metalness: 0.7 });
-  const rack = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.6, 0.7), rackMat);
-  rack.position.y = 1.3; g.add(rack);
-  // Rack units (glowing bars)
-  for (let row = 0; row < 8; row++) {
-    const barMat = new THREE.MeshBasicMaterial({ color: row % 3 === 0 ? 0x00ff88 : 0x0044aa });
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.05), barMat);
-    bar.position.set(0, 0.35 + row * 0.28, 0.35);
-    g.add(bar);
-    const bl = new THREE.PointLight(row % 3 === 0 ? 0x00ff88 : 0x0066ff, 0.15, 2.5);
-    bl.position.copy(bar.position); g.add(bl);
-  }
+  const crateMat = new THREE.MeshStandardMaterial({ color: SITE_WOOD, roughness: 0.95, metalness: 0.02 });
+  const trimMat  = new THREE.MeshStandardMaterial({ color: SITE_WOOD_LO, roughness: 0.9, metalness: 0.04 });
+  // Three stacked crates of varying size for a natural look.
+  const tiers = [
+    { w: 1.4, h: 0.9, d: 0.9, y: 0.45, ox: 0,    oz: 0    },
+    { w: 1.2, h: 0.8, d: 0.8, y: 1.30, ox: 0.05, oz: 0    },
+    { w: 0.9, h: 0.6, d: 0.7, y: 2.00, ox: -0.1, oz: -0.05 },
+  ];
+  tiers.forEach(({w, h, d, y, ox, oz}) => {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), crateMat);
+    box.position.set(ox, y, oz); box.castShadow = true; g.add(box);
+    // Plank trim on top + bottom for a "wood crate" silhouette.
+    const lipTop = new THREE.Mesh(new THREE.BoxGeometry(w * 1.02, 0.08, d * 1.02), trimMat);
+    lipTop.position.set(ox, y + h / 2 - 0.04, oz); g.add(lipTop);
+    const lipBot = new THREE.Mesh(new THREE.BoxGeometry(w * 1.02, 0.08, d * 1.02), trimMat);
+    lipBot.position.set(ox, y - h / 2 + 0.04, oz); g.add(lipBot);
+  });
   g.position.set(x, 0, z);
   scene.add(g);
 }
-makeServerRack(19, -16);
-makeServerRack(19, -9);
-makeServerRack(21, -16); // cluster of racks
+makeCrateStack(19, -16);
+makeCrateStack(19, -9);
+makeCrateStack(21, -16);
 
-// ── Bookshelf ────────────────────────────────────────
+// ── Tool / supply rack (replaces office bookshelf) ───
 function makeBookshelf(x, z, ry) {
   const g = new THREE.Group();
-  const frameMat = new THREE.MeshStandardMaterial({ color: 0x0a1428, roughness: 0.7, metalness: 0.2 });
+  const frameMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.7 });
   const frame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 3.2, 0.4), frameMat);
   frame.position.y = 1.6; g.add(frame);
-  // Shelves
-  const BOOK_COLORS = [0x3b82f6,0xef4444,0x10b981,0x8b5cf6,0xf59e0b,0x06b6d4,0xec4899];
+  // Each "book" becomes a stacked supply box; varied warm tones read as
+  // tools/paint cans/parts bins on a metal shelving unit.
+  const BOOK_COLORS = [SITE_ORANGE, SITE_YELLOW, SITE_WOOD, 0x9aa1a8, 0xb84826, 0x4d6b3f, 0xc3a35c];
   for (let shelf = 0; shelf < 4; shelf++) {
     const sy = 0.55 + shelf * 0.68;
     const shelfMesh = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.35), frameMat);
@@ -2333,7 +2664,8 @@ function makeBookshelf(x, z, ry) {
       bx += bw + 0.01;
     }
   }
-  const gl = new THREE.PointLight(0x2244aa, 0.2, 4);
+  // Warm work-light glow above each rack so it reads from a distance.
+  const gl = new THREE.PointLight(0xfff1cf, 0.18, 4);
   gl.position.set(0, 2.5, 0.5); g.add(gl);
   g.rotation.y = ry;
   g.position.set(x, 0, z);
@@ -2343,10 +2675,10 @@ makeBookshelf(-23, -12, Math.PI / 2);
 makeBookshelf(-23, -6,  Math.PI / 2);
 makeBookshelf(-23,  0,  Math.PI / 2);
 
-// ── Water cooler ─────────────────────────────────────
+// ── Water jug + stand (the break-area cooler) ────────
 function makeWaterCooler(x, z) {
   const g = new THREE.Group();
-  const bMat = new THREE.MeshStandardMaterial({ color: 0x08152a, roughness: 0.4, metalness: 0.6 });
+  const bMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.6 });
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.45, 1.1, 0.38), bMat);
   body.position.y = 0.55; g.add(body);
   // Water bottle (blue cylinder on top)
@@ -2368,26 +2700,30 @@ function makeWaterCooler(x, z) {
 makeWaterCooler(-20, 12);
 makeWaterCooler(18, 12);
 
-// ── Vending machine ──────────────────────────────────
+// ── Equipment locker (replaces vending machine) ──────
+// Tall steel cabinet for tools; the old "product slots" become labelled
+// drawers in safety-orange and yellow.
 function makeVendingMachine(x, z, ry) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x060e20, roughness: 0.3, metalness: 0.7 });
+  const bodyMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.45, metalness: 0.7 });
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.0, 2.2, 0.6), bodyMat);
   body.position.y = 1.1; g.add(body);
-  // Glass front panel
-  const glassMat = new THREE.MeshBasicMaterial({ color: 0x0a2040, transparent: true, opacity: 0.45 });
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 1.5), glassMat);
-  glass.position.set(0, 1.3, 0.31); g.add(glass);
-  // Coloured product rows
-  const COLORS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xc77dff];
+  // Front panel with a single recessed handle line.
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.04, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0x222226, roughness: 0.4, metalness: 0.8 }));
+  handle.position.set(0.32, 1.0, 0.31); g.add(handle);
+  // Drawer faces: rows of orange/yellow labelled bins.
+  const DRAWER_COLORS = [SITE_ORANGE, SITE_YELLOW, SITE_ORANGE, SITE_YELLOW, SITE_ORANGE];
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
-      const c = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.14, 0.04), new THREE.MeshBasicMaterial({ color: COLORS[(row * 3 + col) % COLORS.length] }));
+      const c = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 0.04),
+        new THREE.MeshStandardMaterial({
+          color: DRAWER_COLORS[(row + col) % DRAWER_COLORS.length],
+          roughness: 0.7, metalness: 0.05,
+        }));
       c.position.set(-0.22 + col * 0.22, 1.55 - row * 0.3, 0.30); g.add(c);
     }
   }
-  const gl = new THREE.PointLight(0x4d96ff, 0.3, 4);
-  gl.position.set(0, 1.5, 0.8); g.add(gl);
   g.rotation.y = ry;
   g.position.set(x, 0, z);
   scene.add(g);
@@ -2395,20 +2731,26 @@ function makeVendingMachine(x, z, ry) {
 makeVendingMachine(22, 4, -Math.PI / 2);
 makeVendingMachine(22, 8, -Math.PI / 2);
 
-// ── Printer / copier ─────────────────────────────────
+// ── Site toolbox (replaces office printer) ───────────
 function makePrinter(x, z) {
   const g = new THREE.Group();
-  const m = new THREE.MeshStandardMaterial({ color: 0x0c1830, roughness: 0.5, metalness: 0.4 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 0.8), m);
-  body.position.y = 0.75; g.add(body);
-  const top = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.06, 0.8), m);
-  top.position.y = 1.03; g.add(top);
-  const tray = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.02, 0.5), new THREE.MeshLambertMaterial({ color: 0xffffff }));
-  tray.position.set(0, 1.06, -0.05); g.add(tray);
-  const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.18), new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.5 }));
-  panel.position.set(-0.35, 0.82, 0.41); g.add(panel);
-  const gl = new THREE.PointLight(0x0ea5e9, 0.2, 3);
-  gl.position.set(-0.35, 1, 0.6); g.add(gl);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xb84826, roughness: 0.6, metalness: 0.2 }); // toolbox red
+  const trimMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.6 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 0.5), bodyMat);
+  body.position.y = 0.4; g.add(body);
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.18, 0.52), bodyMat);
+  lid.position.y = 0.74; g.add(lid);
+  // Steel handle on the lid.
+  const handleBar = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.6, 8), trimMat);
+  handleBar.rotation.z = Math.PI / 2;
+  handleBar.position.y = 0.92; g.add(handleBar);
+  [-0.28, 0.28].forEach(hx => {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 8), trimMat);
+    post.position.set(hx, 0.85, 0); g.add(post);
+  });
+  // Front latch + tray hint.
+  const latch = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.04), trimMat);
+  latch.position.set(0, 0.62, 0.27); g.add(latch);
   g.position.set(x, 0, z);
   scene.add(g);
 }
@@ -2424,8 +2766,10 @@ function makeRug(x, z, w, d, color) {
   rug.position.set(x, 0.01, z);
   scene.add(rug);
 }
-makeRug(-17, 6, 7, 6, 0x1a0a2a); // conference area
-makeRug(0, -6, 12, 10, 0x0a1020);  // main workspace
+// Stained-concrete patches under the main workspace and break area —
+// reads as a poured-slab pad on top of the dirt.
+makeRug(-17, 6, 7, 6, SITE_CONCRETE);
+makeRug(0, -6, 12, 10, SITE_CONCRETE);
 
 // ── Wall posters ─────────────────────────────────────
 function makePoster(x, y, z, ry, label, col) {
@@ -2456,123 +2800,157 @@ function makePoster(x, y, z, ry, label, col) {
   g.position.set(x, y, z);
   scene.add(g);
 }
-makePoster(-8,  3.8, -19.7, 0,          'SYSTEM DESIGN', 0x3b82f6);
-makePoster( 8,  3.8, -19.7, 0,          'SHIP IT!',       0x10b981);
-makePoster(-23.9, 4, -5,    Math.PI/2,  'NO BUGS ✓',      0xef4444);
-makePoster(-23.9, 4,  5,    Math.PI/2,  'CLEAN CODE',     0xf59e0b);
-makePoster( 23.9, 4, -5,   -Math.PI/2, 'TEST DRIVEN',    0x8b5cf6);
+// Site signage — same poster slots, construction-themed copy + warm palette.
+makePoster(-8,  3.8, -19.7, 0,          'BLUEPRINTS',    SITE_YELLOW);
+makePoster( 8,  3.8, -19.7, 0,          'SAFETY FIRST',  SITE_ORANGE);
+makePoster(-23.9, 4, -5,    Math.PI/2,  'HARD HAT ZONE', SITE_YELLOW);
+makePoster(-23.9, 4,  5,    Math.PI/2,  'WORK IN PROGRESS', SITE_ORANGE);
+makePoster( 23.9, 4, -5,   -Math.PI/2,  'INSPECTION',    0xb84826);
 
-// Plants (corners)
-function makePlant(x, z) {
+// Traffic cones (replaces office plants). Bright orange cone with a single
+// reflective stripe and a square black base.
+function makeTrafficCone(x, z) {
   const g = new THREE.Group();
-  const potMat = new THREE.MeshStandardMaterial({ color: 0x1a0e0a, roughness: 0.9 });
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0x0a2a10, roughness: 0.8 });
-  const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.22,0.45,10), potMat);
-  pot.position.y = 0.225; g.add(pot);
-  // Three tiers of foliage
-  [[0.55,0.8,0],[0.42,1.3,0],[0.28,1.7,0]].forEach(([r,y,]) => {
-    const leaf = new THREE.Mesh(new THREE.ConeGeometry(r, 0.55, 10), leafMat);
-    leaf.position.y = y; g.add(leaf);
-  });
-  const pl = new THREE.PointLight(0x0a3010, 0.2, 4);
-  pl.position.set(0, 1, 0); g.add(pl);
+  const coneMat   = new THREE.MeshStandardMaterial({ color: SITE_ORANGE, roughness: 0.7, metalness: 0.05 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0xffffff,    roughness: 0.85, metalness: 0.0 });
+  const baseMat   = new THREE.MeshStandardMaterial({ color: 0x2a2a2a,    roughness: 0.95, metalness: 0.0 });
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.06, 0.55), baseMat);
+  base.position.y = 0.03; base.castShadow = true; g.add(base);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.85, 14), coneMat);
+  cone.position.y = 0.49; cone.castShadow = true; g.add(cone);
+  // Reflective stripe — a thin torus around the cone.
+  const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.025, 8, 18), stripeMat);
+  stripe.rotation.x = Math.PI / 2;
+  stripe.position.y = 0.62; g.add(stripe);
+
   g.position.set(x, 0, z);
   scene.add(g);
 }
-makePlant(-21, -17); makePlant(21, -17);
-makePlant(-21, 17);  makePlant(21, 17);
-makePlant(-15, 16);  makePlant(15, 16);
-makePlant(-20, 0);   makePlant(0, -18);
-makePlant(8, 14);
+[
+  [-21, -17], [21, -17], [-21, 17], [21, 17],
+  [-15, 16],  [15, 16],  [-20, 0],  [0, -18],
+  [8, 14],
+].forEach(([x, z]) => makeTrafficCone(x, z));
 
-// ── Coffee station ───────────────────────────────────
+// ── Job-site break station (replaces coffee bar) ─────
+// Wooden counter with a hard-hat sitting on top and a metal water dispenser.
 function makeCoffeeMachine(x, z) {
   const g = new THREE.Group();
-  const m = new THREE.MeshStandardMaterial({ color: 0x0a1020, roughness: 0.4, metalness: 0.65 });
+  const woodMat  = new THREE.MeshStandardMaterial({ color: SITE_WOOD, roughness: 0.85, metalness: 0.04 });
+  const woodLoMat = new THREE.MeshStandardMaterial({ color: SITE_WOOD_LO, roughness: 0.9, metalness: 0.04 });
+  const steelMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.7 });
   // Counter
-  const counter = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.0, 0.9), m);
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.0, 0.9), woodMat);
   counter.position.y = 0.5; g.add(counter);
-  const top = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.05, 0.9), m);
-  top.position.y = 1.02; g.add(top);
-  // Machine body
-  const machine = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.42), m);
-  machine.position.set(-0.55, 1.3, 0); g.add(machine);
-  // Screen glow on machine
-  const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.14), new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.6 }));
-  scr.position.set(-0.55, 1.42, 0.22); g.add(scr);
-  // Cups row
+  const top = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.06, 0.95), woodLoMat);
+  top.position.y = 1.04; g.add(top);
+  // Stainless dispenser
+  const machine = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.42), steelMat);
+  machine.position.set(-0.55, 1.32, 0); g.add(machine);
+  // Tap
+  const tap = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.12, 8), steelMat);
+  tap.rotation.z = Math.PI / 2;
+  tap.position.set(-0.45, 1.18, 0.21); g.add(tap);
+  // Hard hat on the counter
+  const hatBody = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: SITE_YELLOW, roughness: 0.45, metalness: 0.05 }),
+  );
+  hatBody.position.set(0.45, 1.07, 0); g.add(hatBody);
+  const hatBrim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.26, 0.26, 0.03, 14),
+    new THREE.MeshStandardMaterial({ color: SITE_YELLOW, roughness: 0.45, metalness: 0.05 }),
+  );
+  hatBrim.position.set(0.45, 1.06, 0); g.add(hatBrim);
+  // Stack of paper cups
   for (let i = 0; i < 3; i++) {
-    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.045, 0.1, 8), new THREE.MeshLambertMaterial({ color: 0xffffff }));
-    cup.position.set(0.25 + i * 0.18, 1.08, 0); g.add(cup);
+    const cup = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.045, 0.1, 8),
+      new THREE.MeshLambertMaterial({ color: 0xeeeeee }),
+    );
+    cup.position.set(-0.05, 1.12 + i * 0.06, -0.2); g.add(cup);
   }
-  const gl = new THREE.PointLight(0xf59e0b, 0.35, 5);
+  const gl = new THREE.PointLight(0xfff1cf, 0.3, 5);
   gl.position.set(0, 1.8, 0.5); g.add(gl);
   g.position.set(x, 0, z);
   scene.add(g);
 }
 makeCoffeeMachine(-10, 16);
 
-// Conference table (left area)
+// Job-site break table (replaces conference table). Wooden top, steel legs,
+// wooden stools around the perimeter — same physical footprint as the
+// original so any nearby collision/desk math stays valid.
 function makeConfTable(x, z) {
   const g = new THREE.Group();
-  const tMat = new THREE.MeshStandardMaterial({ color: 0x0c1a2e, roughness: 0.5, metalness: 0.3 });
-  const top = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.1, 20), tMat);
-  top.position.y = 0.82; g.add(top);
-  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.82, 8), tMat);
+  const woodMat  = new THREE.MeshStandardMaterial({ color: SITE_WOOD, roughness: 0.85, metalness: 0.04 });
+  const steelMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.65 });
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.1, 20), woodMat);
+  top.position.y = 0.82; top.castShadow = true; g.add(top);
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.82, 8), steelMat);
   leg.position.y = 0.41; g.add(leg);
-  // Chairs around table
+  // Stools instead of chairs — round wooden seats on metal posts.
   for (let c = 0; c < 6; c++) {
     const angle = (c / 6) * Math.PI * 2;
     const cx = Math.cos(angle) * 2.2;
     const cz = Math.sin(angle) * 2.2;
-    const cs = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.08,0.6), tMat);
-    cs.position.set(cx, 0.5, cz); g.add(cs);
-    const cb = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.4,0.06), tMat);
-    cb.position.set(cx, 0.74, cz - 0.27 * Math.cos(angle));
-    cb.rotation.y = -angle; g.add(cb);
+    const seat = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.32, 0.08, 12), woodMat,
+    );
+    seat.position.set(cx, 0.52, cz); g.add(seat);
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 0.48, 8), steelMat,
+    );
+    post.position.set(cx, 0.24, cz); g.add(post);
   }
   g.position.set(x, 0, z);
   scene.add(g);
 }
 makeConfTable(-17, 6);
 
-// Reception desk (front)
+// Foreman's table (front) — replaces the reception desk. Wooden top, steel
+// frame; the small "monitor" becomes a clipboard with a yellow notepad.
 function makeReception(x, z) {
   const g = new THREE.Group();
-  const m = new THREE.MeshStandardMaterial({ color: 0x080e1e, roughness: 0.6, metalness: 0.4 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(4.5, 1.15, 0.8), m);
+  const woodMat  = new THREE.MeshStandardMaterial({ color: SITE_WOOD, roughness: 0.85, metalness: 0.04 });
+  const steelMat = new THREE.MeshStandardMaterial({ color: SITE_STEEL, roughness: 0.5, metalness: 0.65 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.5, 1.15, 0.8), steelMat);
   body.position.y = 0.575; g.add(body);
-  const top2 = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.08, 1.0), m);
+  const top2 = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.08, 1.0), woodMat);
   top2.position.y = 1.19; g.add(top2);
-  // Small monitor on reception
-  const rm = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.5,0.06), m);
-  rm.position.set(1.2, 1.5, 0); g.add(rm);
-  const rs = new THREE.Mesh(new THREE.PlaneGeometry(0.58,0.38),
-    new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.2 }));
-  rs.position.set(1.2, 1.5, 0.035); g.add(rs);
-  const rl = new THREE.PointLight(0x0ea5e9, 0.3, 4);
-  rl.position.set(1.2, 1.8, 0.5); g.add(rl);
+  // Clipboard with a yellow notepad standing up
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.05, 0.5),
+    new THREE.MeshStandardMaterial({ color: 0x222226, roughness: 0.6, metalness: 0.5 }));
+  clip.position.set(1.2, 1.25, 0); clip.rotation.x = -0.18; g.add(clip);
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.02, 0.45),
+    new THREE.MeshStandardMaterial({ color: SITE_YELLOW, roughness: 0.85, metalness: 0.0 }));
+  pad.position.set(1.2, 1.28, 0); pad.rotation.x = -0.18; g.add(pad);
+  // Small radio on the desk (talkie)
+  const radio = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.42, 0.16),
+    new THREE.MeshStandardMaterial({ color: SITE_ORANGE, roughness: 0.6, metalness: 0.1 }));
+  radio.position.set(-1.4, 1.41, 0); g.add(radio);
   g.position.set(x, 0, z);
   scene.add(g);
 }
 makeReception(0, 16);
 
-// Whiteboard (back wall)
+// Blueprint board on a plywood frame — replaces the whiteboard. Same slot.
 function makeWhiteboard(x, y, z) {
   const g = new THREE.Group();
   const frame = new THREE.Mesh(new THREE.BoxGeometry(5, 2.5, 0.08),
-    new THREE.MeshStandardMaterial({ color: 0x080e1a, roughness: 0.5, metalness: 0.4 }));
+    new THREE.MeshStandardMaterial({ color: SITE_WOOD_LO, roughness: 0.85, metalness: 0.05 }));
   g.add(frame);
+  // Cyan-tinted blueprint paper.
   const board = new THREE.Mesh(new THREE.PlaneGeometry(4.7, 2.2),
-    new THREE.MeshBasicMaterial({ color: 0x0a1830, transparent: true, opacity: 0.9 }));
+    new THREE.MeshBasicMaterial({ color: 0x2a5a90, transparent: true, opacity: 0.95 }));
   board.position.z = 0.05; g.add(board);
-  // Some "lines" on board
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x1a4060 });
+  // White "draft lines" hint.
+  const lineMat = new THREE.LineBasicMaterial({ color: 0xe0eaf4 });
   for (let li = 0; li < 5; li++) {
     const pts = [new THREE.Vector3(-2.2, 0.7 - li * 0.38, 0.06), new THREE.Vector3(2.2, 0.7 - li * 0.38, 0.06)];
     scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
   }
-  const wl = new THREE.PointLight(0x1a3a6a, 0.4, 8);
+  const wl = new THREE.PointLight(0xfff1cf, 0.35, 8);
   wl.position.set(0, 0.5, 1); g.add(wl);
   g.position.set(x, y, z);
   scene.add(g);
@@ -2580,29 +2958,659 @@ function makeWhiteboard(x, y, z) {
 makeWhiteboard(-8, 3.8, -19.8);
 makeWhiteboard(8,  3.8, -19.8);
 
-// ── Wall TV (conference area) ─────────────────────────
+// ── Site safety / schedule board (replaces the wall TV) ──────────────
 function makeWallTV(x, y, z, ry) {
   const g = new THREE.Group();
-  const tvMat = new THREE.MeshStandardMaterial({ color: 0x050c18, roughness: 0.3, metalness: 0.8 });
-  const bezel = new THREE.Mesh(new THREE.BoxGeometry(3.5, 2.0, 0.1), tvMat);
-  g.add(bezel);
-  const screenMat = new THREE.MeshBasicMaterial({ color: 0x0a3060, transparent: true, opacity: 0.8 });
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.75), screenMat);
-  screen.position.z = 0.056; g.add(screen);
-  // "Status dashboard" lines on screen
-  const lineMat2 = new THREE.LineBasicMaterial({ color: 0x0ea5e9 });
-  for (let li = 0; li < 4; li++) {
-    const pts = [new THREE.Vector3(-1.4, 0.55 - li * 0.35, 0.06), new THREE.Vector3(0.6 + Math.random() * 0.7, 0.55 - li * 0.35, 0.06)];
-    const ln = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat2);
-    g.add(ln);
+  // Plywood backing with a steel bracket frame.
+  const woodMat   = new THREE.MeshStandardMaterial({ color: SITE_WOOD_LO, roughness: 0.85, metalness: 0.05 });
+  const yellowMat = new THREE.MeshStandardMaterial({ color: SITE_YELLOW,   roughness: 0.6,  metalness: 0.05 });
+  const orangeMat = new THREE.MeshStandardMaterial({ color: SITE_ORANGE,   roughness: 0.6,  metalness: 0.05 });
+  const dark      = new THREE.MeshBasicMaterial({ color: 0x222226 });
+  const board = new THREE.Mesh(new THREE.BoxGeometry(3.5, 2.0, 0.1), woodMat);
+  g.add(board);
+  // Yellow header strip
+  const header = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.45, 0.04), yellowMat);
+  header.position.set(0, 0.72, 0.06); g.add(header);
+  // Orange "schedule rows" pinned underneath
+  for (let i = 0; i < 3; i++) {
+    const row = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.32, 0.04), orangeMat);
+    row.position.set(0, 0.18 - i * 0.42, 0.06); g.add(row);
+    // Pin nails (top corners of each row)
+    [-1.4, 1.4].forEach((px) => {
+      const pin = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), dark);
+      pin.position.set(px, row.position.y + 0.13, 0.09); g.add(pin);
+    });
   }
-  const gl = new THREE.PointLight(0x0ea5e9, 0.5, 8);
-  gl.position.set(0, 0, 1); g.add(gl);
+  // Warm work-light pool in front of the board.
+  const gl = new THREE.PointLight(0xfff1cf, 0.45, 7);
+  gl.position.set(0, 0, 1.1); g.add(gl);
   g.rotation.y = ry;
   g.position.set(x, y, z);
   scene.add(g);
 }
 makeWallTV(-23.8, 4.5, 6, Math.PI / 2);
+
+// ════════════════════════════════════════════════════
+//  CONSTRUCTION SITE PROPS
+// ════════════════════════════════════════════════════
+// Standalone props that decorate the site. Each builder takes (x, z, ry?)
+// world coordinates and adds itself directly to the scene. Placement avoids
+// the agent positions ([-10..10, -10] and [-5/5, -2]) and the player spawn.
+
+function _siteMat(color, rough = 0.85, metal = 0.05) {
+  return new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
+}
+
+// Lumber stack — long planks bound together.
+function makeLumberStack(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const woodA = _siteMat(SITE_WOOD);
+  const woodB = _siteMat(SITE_WOOD_LO);
+  // Bottom layer: 5 planks side by side
+  for (let i = 0; i < 5; i++) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.12, 0.28), i % 2 ? woodA : woodB);
+    p.position.set(0, 0.06, -0.6 + i * 0.3); p.castShadow = true; g.add(p);
+  }
+  // Middle layer
+  for (let i = 0; i < 4; i++) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.12, 0.28), i % 2 ? woodB : woodA);
+    p.position.set(0, 0.20, -0.45 + i * 0.3); p.castShadow = true; g.add(p);
+  }
+  // Top layer
+  for (let i = 0; i < 3; i++) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.12, 0.28), woodA);
+    p.position.set(0, 0.34, -0.3 + i * 0.3); p.castShadow = true; g.add(p);
+  }
+  // Tying strap (yellow)
+  const strap = new THREE.Mesh(
+    new THREE.BoxGeometry(0.04, 0.5, 1.5),
+    _siteMat(SITE_YELLOW),
+  );
+  strap.position.set(-1.0, 0.21, 0); g.add(strap);
+  const strap2 = strap.clone(); strap2.position.x = 1.0; g.add(strap2);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Brick pile — stacked rows of red-brown bricks.
+function makeBrickPile(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const brickA = _siteMat(0xa83a25);
+  const brickB = _siteMat(0x8a3220);
+  for (let row = 0; row < 4; row++) {
+    const offset = (row % 2) * 0.16;
+    for (let i = 0; i < 5; i++) {
+      const b = new THREE.Mesh(
+        new THREE.BoxGeometry(0.32, 0.14, 0.16),
+        i % 2 ? brickA : brickB,
+      );
+      b.position.set(-0.64 + i * 0.32 + offset, 0.07 + row * 0.14, 0);
+      b.castShadow = true; g.add(b);
+    }
+  }
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Wheelbarrow — wooden tray, single black wheel, two handles.
+function makeWheelbarrow(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const orangeMat = _siteMat(SITE_ORANGE, 0.6);
+  const steelMat  = _siteMat(SITE_STEEL, 0.5, 0.6);
+  const dark      = _siteMat(0x222226, 0.7, 0.4);
+  // Tray (open box)
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.35, 0.55), orangeMat);
+  tray.position.set(0, 0.55, 0); tray.castShadow = true; g.add(tray);
+  // Heap of "concrete" inside
+  const heap = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8), _siteMat(SITE_CONCRETE));
+  heap.scale.y = 0.4;
+  heap.position.set(0, 0.78, 0); g.add(heap);
+  // Two handles extending back
+  [-0.18, 0.18].forEach((zp) => {
+    const h = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.2, 8), steelMat);
+    h.rotation.z = Math.PI / 2;
+    h.rotation.y = 0;
+    h.position.set(-0.85, 0.55, zp); g.add(h);
+  });
+  // Single wheel at front
+  const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.12, 14), dark);
+  wheel.rotation.x = Math.PI / 2;
+  wheel.position.set(0.55, 0.22, 0); g.add(wheel);
+  // Front leg stand
+  [-0.18, 0.18].forEach((zp) => {
+    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.35, 0.06), steelMat);
+    stand.position.set(-0.45, 0.18, zp); g.add(stand);
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Sawhorse with a long plank balanced on top.
+function makeSawhorse(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const wood = _siteMat(SITE_WOOD);
+  const woodLo = _siteMat(SITE_WOOD_LO);
+  // A-frame legs (4 angled)
+  [-0.5, 0.5].forEach((xp) => {
+    [-0.25, 0.25].forEach((zp) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.08), wood);
+      leg.position.set(xp, 0.5, zp);
+      // Splay outward
+      leg.rotation.z = (xp > 0 ? -1 : 1) * 0.18;
+      g.add(leg);
+    });
+  });
+  // Top spine
+  const spine = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.12, 0.16), woodLo);
+  spine.position.y = 0.98; spine.castShadow = true; g.add(spine);
+  // Plank lying across it
+  const plankBoard = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 0.4), wood);
+  plankBoard.position.set(0, 1.08, 0); plankBoard.castShadow = true; g.add(plankBoard);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Cement mixer — drum on a tilted axle with a wheeled steel frame.
+function makeCementMixer(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const orangeMat = _siteMat(SITE_ORANGE, 0.55, 0.1);
+  const steelMat  = _siteMat(SITE_STEEL, 0.5, 0.6);
+  const dark      = _siteMat(0x222226);
+  // Drum (tilted)
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.45, 1.0, 14), orangeMat);
+  drum.position.set(0, 1.05, 0);
+  drum.rotation.x = -0.45;
+  drum.rotation.z = Math.PI / 2;
+  drum.castShadow = true;
+  g.add(drum);
+  // Frame: two vertical posts + crossbar
+  [-0.45, 0.45].forEach((xp) => {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.08), steelMat);
+    post.position.set(xp, 0.5, 0); g.add(post);
+  });
+  // Wheels
+  [-0.45, 0.45].forEach((xp) => {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.1, 12), dark);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(xp, 0.18, 0); g.add(w);
+  });
+  // Tow handle
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.9, 8), steelMat);
+  handle.rotation.z = Math.PI / 2;
+  handle.position.set(0.85, 0.4, 0); g.add(handle);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Pipe stack — bundle of grey/orange PVC pipes.
+function makePipeStack(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const grey   = _siteMat(0x9aa1a8, 0.7, 0.2);
+  const orange = _siteMat(SITE_ORANGE, 0.7, 0.05);
+  const positions = [
+    {y: 0.16, z:  0.0,  m: grey},
+    {y: 0.16, z:  0.32, m: grey},
+    {y: 0.16, z: -0.32, m: orange},
+    {y: 0.46, z:  0.16, m: orange},
+    {y: 0.46, z: -0.16, m: grey},
+    {y: 0.74, z:  0.0,  m: grey},
+  ];
+  positions.forEach(({y, z: pz, m}) => {
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 2.4, 12), m);
+    p.rotation.z = Math.PI / 2;
+    p.position.set(0, y, pz);
+    p.castShadow = true; g.add(p);
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Portable generator — small steel box with a chimney pipe and a panel.
+function makeGenerator(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const yellow = _siteMat(SITE_YELLOW);
+  const steel  = _siteMat(SITE_STEEL, 0.5, 0.65);
+  const dark   = _siteMat(0x222226);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.7), yellow);
+  body.position.y = 0.35; body.castShadow = true; g.add(body);
+  // Top vent grille
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.05, 0.6), dark);
+  grille.position.y = 0.73; g.add(grille);
+  // Exhaust pipe sticking up
+  const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.55, 8), dark);
+  exhaust.position.set(-0.4, 1.0, 0); g.add(exhaust);
+  // Front panel + handles
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.04), dark);
+  panel.position.set(0.0, 0.4, 0.36); g.add(panel);
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.15, 8), steel);
+  handle.rotation.z = Math.PI / 2;
+  handle.position.set(0, 0.78, -0.36); g.add(handle);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Tower crane silhouette — tall mast + horizontal jib in the distance.
+function makeTowerCrane(x, z) {
+  const g = new THREE.Group();
+  const steel = _siteMat(SITE_STEEL, 0.55, 0.6);
+  const yellow = _siteMat(SITE_YELLOW, 0.6, 0.15);
+  // Tall mast (lattice tower simplified to a slim rectangular column)
+  const mast = new THREE.Mesh(new THREE.BoxGeometry(0.7, 18, 0.7), yellow);
+  mast.position.set(0, 9, 0); mast.castShadow = true; g.add(mast);
+  // Top jib (the long arm)
+  const jib = new THREE.Mesh(new THREE.BoxGeometry(14, 0.5, 0.5), yellow);
+  jib.position.set(2, 18.2, 0); g.add(jib);
+  // Counter jib
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(4, 0.5, 0.5), yellow);
+  counter.position.set(-3.5, 18.2, 0); g.add(counter);
+  // Operator cab on top of mast
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.7, 0.9), steel);
+  cab.position.set(0, 17.55, 0); g.add(cab);
+  // Hook block hanging from the jib
+  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 6.0, 4), steel);
+  cable.position.set(7.5, 15.0, 0); g.add(cable);
+  const hook = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.4), _siteMat(0x222226));
+  hook.position.set(7.5, 11.85, 0); g.add(hook);
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Place the new props around the perimeter where they don't collide with
+// agent desks / chairs / the obby. Coordinates picked to spread them out.
+makeLumberStack(-18,  -8, 0);
+makeLumberStack( 18,   2, Math.PI / 2);
+makeBrickPile(-18,   12, 0);
+makeBrickPile( 18,   -2, 0);
+makeWheelbarrow(-12, 14,  0.5);
+makeWheelbarrow(  6,  16, -0.4);
+makeSawhorse( -8,    14, 0);
+makeSawhorse( 14,     6, Math.PI / 2);
+makeCementMixer( 12,  16, -0.3);
+makePipeStack(-14,    8, 0);
+makePipeStack( 16,   -7, Math.PI / 2);
+makeGenerator(-15,   -4, 0);
+makeGenerator( 18,    8, -Math.PI / 2);
+// Tower cranes flanking the back, well behind the safety barrier so they
+// read as off-site landmarks.
+makeTowerCrane(-30, -28);
+makeTowerCrane( 32, -26);
+
+// ════════════════════════════════════════════════════
+//  EXTENDED CONSTRUCTION PROPS
+// ════════════════════════════════════════════════════
+// Heavier set of decorative props that fill out the site. All are pure visual
+// — no collision additions, no side effects on physics.
+
+// Stack of grey cinder blocks (chunkier than the brick pile).
+function makeCinderBlocks(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const blockA = _siteMat(0x9aa1a8);
+  const blockB = _siteMat(0x7e858c);
+  for (let row = 0; row < 3; row++) {
+    const offset = (row % 2) * 0.18;
+    for (let i = 0; i < 4; i++) {
+      const b = new THREE.Mesh(
+        new THREE.BoxGeometry(0.42, 0.22, 0.22),
+        i % 2 ? blockA : blockB,
+      );
+      b.position.set(-0.63 + i * 0.42 + offset, 0.11 + row * 0.22, 0);
+      b.castShadow = true; g.add(b);
+      // Hollow cores (two dark squares on each block face)
+      [-0.1, 0.1].forEach(cz => {
+        const hole = new THREE.Mesh(
+          new THREE.BoxGeometry(0.13, 0.18, 0.02),
+          new THREE.MeshBasicMaterial({ color: 0x222226 }),
+        );
+        hole.position.set(b.position.x, b.position.y, 0.115);
+        hole.position.z += cz;
+        g.add(hole);
+      });
+    }
+  }
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Steel barrel (oil drum). Some upright, some on their side for variety.
+function makeSteelBarrel(x, z, sideways = false) {
+  const g = new THREE.Group();
+  const drumMat = _siteMat(0xc94824, 0.7, 0.4);
+  const ringMat = _siteMat(0x6e2a1a, 0.6, 0.3);
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.85, 14), drumMat);
+  drum.castShadow = true;
+  if (sideways) {
+    drum.rotation.z = Math.PI / 2;
+    drum.position.y = 0.32;
+  } else {
+    drum.position.y = 0.425;
+  }
+  g.add(drum);
+  // Two pinch-rings around the barrel
+  [-0.25, 0.25].forEach((rOffset) => {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.025, 6, 16), ringMat);
+    if (sideways) {
+      ring.rotation.y = Math.PI / 2;
+      ring.position.set(rOffset, 0.32, 0);
+    } else {
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.425 + rOffset;
+    }
+    g.add(ring);
+  });
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Stacked sandbags (pyramid).
+function makeSandbagStack(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const bag = _siteMat(0xc2a86b, 0.95, 0.0);
+  // Bottom row of 3, then 2, then 1 — squashed-cube approximation
+  const rows = [
+    { y: 0.10, count: 3 },
+    { y: 0.30, count: 2, offset: 0.22 },
+    { y: 0.50, count: 1, offset: 0.44 },
+  ];
+  rows.forEach(({y, count, offset = 0}) => {
+    for (let i = 0; i < count; i++) {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.32), bag);
+      b.position.set(-0.42 + i * 0.44 + offset, y, 0);
+      b.castShadow = true;
+      // Squash slightly to fake fabric sag
+      b.scale.y = 1.1;
+      g.add(b);
+    }
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Dumpster — large rectangular bin with diagonal supports on the sides.
+function makeDumpster(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const greenMat = _siteMat(0x4d6b3f, 0.85, 0.1);
+  const trim     = _siteMat(0x2d4022, 0.9);
+  const dark     = _siteMat(0x222226);
+  // Body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.2, 1.4), greenMat);
+  body.position.y = 0.6; body.castShadow = true; g.add(body);
+  // Trim around the top edge
+  const lipFront = new THREE.Mesh(new THREE.BoxGeometry(2.65, 0.08, 1.45), trim);
+  lipFront.position.y = 1.22; g.add(lipFront);
+  // Two diagonal side supports
+  [-1.3, 1.3].forEach(sx => {
+    const sup = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.5, 0.06), trim);
+    sup.position.set(sx, 0.6, 0); sup.rotation.x = 0.2; g.add(sup);
+  });
+  // Wheels
+  [[-1.0, -0.6], [1.0, -0.6], [-1.0, 0.6], [1.0, 0.6]].forEach(([wx, wz]) => {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.1, 10), dark);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(wx, 0.12, wz); g.add(w);
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Porta-potty — tall blue cabin with a vent pipe and door.
+function makePortaPotty(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const blueMat = _siteMat(0x2e6db8, 0.85, 0.05);
+  const trim    = _siteMat(0x1a4a85, 0.9);
+  const dark    = _siteMat(0x222226);
+  const roofMat = _siteMat(0x1f2429, 0.9);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 2.1, 0.95), blueMat);
+  body.position.y = 1.05; body.castShadow = true; g.add(body);
+  // Door panel
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.7, 0.04), trim);
+  door.position.set(0, 1.0, 0.49); g.add(door);
+  // Vent on the front of the door
+  const vent = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.02), dark);
+  vent.position.set(0, 1.65, 0.51); g.add(vent);
+  // Roof slope
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 1.0), roofMat);
+  roof.position.y = 2.13; g.add(roof);
+  // Side vent pipe
+  const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.7, 8), dark);
+  pipe.position.set(-0.35, 2.4, -0.3); g.add(pipe);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Site office trailer — long single-wide with windows and a step.
+function makeOfficeTrailer(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const bodyMat   = _siteMat(0xddd6c2, 0.9);     // off-white siding
+  const trimMat   = _siteMat(0xc4a25d, 0.85);    // tan trim
+  const windowMat = new THREE.MeshBasicMaterial({ color: 0x6b88a8, transparent: true, opacity: 0.55 });
+  const dark      = _siteMat(0x222226);
+  // Main body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(5.0, 2.4, 2.2), bodyMat);
+  body.position.y = 1.5; body.castShadow = true; g.add(body);
+  // Roofline
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.15, 2.4), trimMat);
+  roof.position.y = 2.78; g.add(roof);
+  // Door
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.4, 0.04), trimMat);
+  door.position.set(-1.6, 1.0, 1.12); g.add(door);
+  // Step
+  const step = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.18, 0.4), dark);
+  step.position.set(-1.6, 0.18, 1.32); g.add(step);
+  // Three windows along the front
+  [0, 1.4].forEach(wx => {
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.7), windowMat);
+    win.position.set(wx, 1.55, 1.115); g.add(win);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.74, 0.04), trimMat);
+    frame.position.set(wx, 1.55, 1.12); g.add(frame);
+  });
+  // Skid base
+  const skid = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.2, 2.3), dark);
+  skid.position.y = 0.2; g.add(skid);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Scaffold tower — three levels of metal frame with planks across the top.
+function makeScaffoldTower(x, z) {
+  const g = new THREE.Group();
+  const steel = _siteMat(SITE_STEEL, 0.5, 0.65);
+  const woodMat  = _siteMat(SITE_WOOD);
+  const yellowMat = _siteMat(SITE_YELLOW);
+  // Four corner posts (3 levels = 4.2 high)
+  [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]].forEach(([px, pz]) => {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.5, 8), steel);
+    post.position.set(px, 2.25, pz); g.add(post);
+  });
+  // Cross braces at three levels
+  [1.3, 2.7, 4.1].forEach(yLevel => {
+    [-0.9, 0.9].forEach(side => {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 1.85), steel);
+      bar.position.set(side, yLevel, 0); g.add(bar);
+      const bar2 = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.06, 0.06), steel);
+      bar2.position.set(0, yLevel, side); g.add(bar2);
+    });
+  });
+  // Plank decking across the top
+  for (let i = 0; i < 4; i++) {
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.06, 0.4), woodMat);
+    plank.position.set(0, 4.18, -0.6 + i * 0.4); g.add(plank);
+  }
+  // Yellow caution band around the top
+  [[-1.0, 0], [1.0, 0], [0, -1.0], [0, 1.0]].forEach(([bx, bz]) => {
+    const band = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.18, 0.12), yellowMat);
+    band.position.set(bx, 4.5, bz); g.add(band);
+  });
+  // Side ladder
+  const ladderRailL = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 4.5, 6), steel);
+  ladderRailL.position.set(0.95, 2.25, 0.92); g.add(ladderRailL);
+  const ladderRailR = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 4.5, 6), steel);
+  ladderRailR.position.set(0.95, 2.25, 1.18); g.add(ladderRailR);
+  for (let r = 0; r < 8; r++) {
+    const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.3, 6), steel);
+    rung.rotation.x = Math.PI / 2;
+    rung.position.set(0.95, 0.5 + r * 0.5, 1.05); g.add(rung);
+  }
+  g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Step ladder leaning against thin air — adds vertical interest in corners.
+function makeStepLadder(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const orange = _siteMat(SITE_ORANGE, 0.55, 0.1);
+  // A-frame side rails
+  [-0.3, 0.3].forEach(sx => {
+    const railFront = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.8, 0.05), orange);
+    railFront.position.set(sx, 0.9, 0.18); railFront.rotation.x = 0.18; g.add(railFront);
+    const railBack = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.8, 0.05), orange);
+    railBack.position.set(sx, 0.9, -0.18); railBack.rotation.x = -0.18; g.add(railBack);
+  });
+  // Rungs (front side)
+  for (let r = 0; r < 4; r++) {
+    const rung = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.04, 0.04), orange);
+    rung.position.set(0, 0.4 + r * 0.4, 0.12); g.add(rung);
+  }
+  // Top platform
+  const topPlate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.06, 0.4), orange);
+  topPlate.position.set(0, 1.78, 0); g.add(topPlate);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Sandwich-board "DANGER" sign at the perimeter.
+function makeDangerSign(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const yellow = _siteMat(SITE_YELLOW, 0.6, 0.05);
+  const dark   = _siteMat(0x222226, 0.7, 0.4);
+  // Two A-frame boards
+  [-1, 1].forEach(side => {
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.04), yellow);
+    board.position.set(0, 0.45, 0); board.rotation.y = side * 0.5; g.add(board);
+    // Diagonal black hazard stripe
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.18, 0.05), dark);
+    stripe.position.set(0, 0.45, 0); stripe.rotation.z = 0.5; stripe.rotation.y = side * 0.5; g.add(stripe);
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Excavator — boxy yellow cab + tracked base + jointed arm with a bucket.
+function makeExcavator(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const yellow = _siteMat(SITE_YELLOW, 0.55, 0.1);
+  const steel  = _siteMat(SITE_STEEL, 0.5, 0.6);
+  const dark   = _siteMat(0x222226);
+  // Tracks
+  [-0.7, 0.7].forEach(tx => {
+    const track = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 2.4), dark);
+    track.position.set(tx, 0.2, 0); g.add(track);
+    // Wheels poking out of the track
+    [-0.9, 0, 0.9].forEach(wz => {
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.55, 10), steel);
+      w.rotation.z = Math.PI / 2;
+      w.position.set(tx, 0.2, wz); g.add(w);
+    });
+  });
+  // Body base
+  const base = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 1.8), yellow);
+  base.position.y = 0.6; base.castShadow = true; g.add(base);
+  // Cab
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.1, 1.3), yellow);
+  cab.position.set(-0.3, 1.35, 0); cab.castShadow = true; g.add(cab);
+  // Cab window (single front pane)
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.7),
+    new THREE.MeshBasicMaterial({ color: 0x5b7a98, transparent: true, opacity: 0.55 }));
+  win.position.set(0.31, 1.5, 0); win.rotation.y = -Math.PI / 2; g.add(win);
+  // Arm — boom + stick + bucket
+  const boom = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.28, 0.3), yellow);
+  boom.position.set(1.4, 1.5, 0); boom.rotation.z = -0.55; g.add(boom);
+  const stick = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.22, 0.26), yellow);
+  stick.position.set(2.6, 1.0, 0); stick.rotation.z = 0.4; g.add(stick);
+  const bucket = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.45, 0.6), steel);
+  bucket.position.set(3.5, 0.45, 0); g.add(bucket);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Dump truck — cab + tipper bed full of dirt.
+function makeDumpTruck(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const yellow = _siteMat(SITE_YELLOW, 0.55, 0.15);
+  const steel  = _siteMat(SITE_STEEL, 0.5, 0.6);
+  const dark   = _siteMat(0x222226);
+  const dirtMat = _siteMat(SITE_DIRT, 0.95);
+  // Cab
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.5), yellow);
+  cab.position.set(-1.3, 1.0, 0); cab.castShadow = true; g.add(cab);
+  // Cab window
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.7),
+    new THREE.MeshBasicMaterial({ color: 0x5b7a98, transparent: true, opacity: 0.55 }));
+  win.position.set(-1.3, 1.45, 0.76); g.add(win);
+  // Tipper bed (open box)
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.6, 1.6), yellow);
+  bed.position.set(0.7, 1.1, 0); bed.castShadow = true; g.add(bed);
+  // Dirt heap inside the bed
+  const dirt = new THREE.Mesh(new THREE.SphereGeometry(0.95, 12, 8), dirtMat);
+  dirt.scale.y = 0.45;
+  dirt.position.set(0.7, 1.55, 0); g.add(dirt);
+  // Chassis
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.2, 1.4), dark);
+  chassis.position.y = 0.5; g.add(chassis);
+  // Wheels (6: 2 front, 4 dual back)
+  const wheelPositions = [[-1.5, -0.7], [-1.5, 0.7], [0.5, -0.78], [0.5, 0.78], [1.4, -0.78], [1.4, 0.78]];
+  wheelPositions.forEach(([wx, wz]) => {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.28, 14), dark);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(wx, 0.32, wz); g.add(w);
+  });
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// I-beam stack — three beams in a triangular bundle.
+function makeIBeamStack(x, z, ry = 0) {
+  const g = new THREE.Group();
+  const beamMat = _siteMat(0xb04830, 0.6, 0.5); // rust-orange steel
+  function _ibeam() {
+    const ib = new THREE.Group();
+    const flangeTop = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 4.0), beamMat);
+    flangeTop.position.y = 0.225; ib.add(flangeTop);
+    const flangeBot = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 4.0), beamMat);
+    flangeBot.position.y = -0.225; ib.add(flangeBot);
+    const web = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, 4.0), beamMat);
+    ib.add(web);
+    return ib;
+  }
+  const b1 = _ibeam(); b1.position.set(-0.25, 0.25, 0); g.add(b1);
+  const b2 = _ibeam(); b2.position.set( 0.25, 0.25, 0); g.add(b2);
+  const b3 = _ibeam(); b3.position.set( 0.0,  0.78, 0); g.add(b3);
+  g.rotation.y = ry; g.position.set(x, 0, z);
+  scene.add(g);
+}
+
+// Place the new props.
+makeCinderBlocks(-12, -16, 0);
+makeCinderBlocks( 14, -14, 0);
+makeSteelBarrel(-22,  14);
+makeSteelBarrel(-21.4, 14, true);
+makeSteelBarrel( 22, -10);
+makeSandbagStack(-19, -2, 0);
+makeSandbagStack( 19,  4, Math.PI / 2);
+makeSandbagStack(  6, -16, -0.3);
+makeDumpster( 21, 12, -Math.PI / 2);
+makePortaPotty(-22,  -14, 0);
+makePortaPotty( 22,   16, -Math.PI / 2);
+makeOfficeTrailer(-13, -17, 0);
+makeScaffoldTower(13, -16);
+makeStepLadder(-15, -10, 0.4);
+makeStepLadder( 15,  10, -0.6);
+makeDangerSign(-3, -19, 0);
+makeDangerSign( 3,  19, Math.PI);
+// Heavy machinery — placed in the back-left dirt area where there's room.
+makeExcavator(-18, -14, Math.PI / 4);
+makeDumpTruck( 16, -10, -Math.PI / 4);
+makeIBeamStack(-10, -16, Math.PI / 6);
+makeIBeamStack( 10, -14, -Math.PI / 6);
 
 // ── Thought Bubbles ──────────────────────────────────
 
@@ -3573,6 +4581,34 @@ function animate() {
       glow.intensity = 0.24 + Math.sin(t * 1.2 + off) * 0.05;
       screenMat.opacity = 0.55;
     }
+
+    // KayKit overlay motion: the procedural torso/head animations above only
+    // drive the (now-hidden) box body. The actual visible character lives in
+    // bodyHolder, so we apply a coarse construction-worker motion HERE so the
+    // worker is visibly active even when the underlying clip is subtle.
+    const bh = agentNPCs[agent.id] && agentNPCs[agent.id].bodyHolder;
+    const npcInfo = (typeof _kaykitNpcs !== 'undefined') ? _kaykitNpcs[agent.id] : null;
+    const npcState = npcInfo && npcInfo.currentState;
+    if (bh) {
+      let targetTilt = 0, targetBob = 0, targetYaw = 0;
+      if (npcState === 'work' || state === 'working') {
+        // Hammer-swing pattern: lean forward, drop a bit, then return.
+        const phase = t * 5.2 + off;
+        targetTilt = 0.10 + Math.abs(Math.sin(phase)) * 0.18;   // 0.10..0.28 rad fwd
+        targetBob  = -Math.abs(Math.sin(phase)) * 0.08;          // bend knees
+        targetYaw  = Math.sin(phase * 0.5) * 0.06;               // small twist
+      } else if (npcState === 'error_react' || state === 'error') {
+        targetTilt = -Math.sin(t * 14 + off) * 0.08;             // recoil
+        targetBob  = Math.sin(t * 14 + off) * 0.04;
+      } else if (npcState === 'celebrate') {
+        targetBob  = Math.abs(Math.sin(t * 6.5 + off)) * 0.20;   // bounce
+        targetYaw  = Math.sin(t * 4.0 + off) * 0.12;             // sway
+      }
+      // Smooth toward target so transitions look natural (not snappy).
+      bh.rotation.x += (targetTilt - bh.rotation.x) * 0.18;
+      bh.rotation.y += (targetYaw  - bh.rotation.y) * 0.18;
+      bh.position.y += (targetBob  - bh.position.y) * 0.20;
+    }
   });
 
   renderer.render(scene, camera);
@@ -3953,6 +4989,12 @@ function connectWS() {
       } else if (data.state === 'error') {
         showToast(`${name} error — ${data.message.slice(0,50)}`, 'error');
       }
+      // Drive the KayKit character's animation state from the backend phase.
+      // Working -> active anim, error -> brief flinch, idle/done -> rest.
+      // Slight delay so the toast and the character motion don't collide
+      // on the same frame — feels less robotic.
+      setTimeout(() => applyAgentStateToNpc(data.name, data.state), 120);
+      _setNpcDeskGlow(data.name, data.state);
 
     } else if (event === 'output_update') {
       const el = document.getElementById('text-' + data.type);
@@ -3980,6 +5022,12 @@ function connectWS() {
       document.getElementById('download-btn').style.display = 'none';
       hideBuildActions();
       hideDecomposition();
+      // Reset all NPCs to idle when a new build starts so leftover celebrate
+      // or error reactions from the previous build don't bleed in.
+      AGENTS.forEach((a) => {
+        setNpcState(a.id, NPC_STATE.IDLE);
+        _setNpcDeskGlow(a.id, 'idle');
+      });
       const req = data.request.length > 38 ? data.request.slice(0,38) + '...' : data.request;
       setHud('building', 'BUILDING');
       startBuildEta(data.eta_seconds || 0);
@@ -4012,6 +5060,16 @@ function connectWS() {
         });
         playBuildSfx('complete');
         allCheer();
+        // Every NPC celebrates briefly, then settles back to idle.
+        AGENTS.forEach((a, i) => {
+          setTimeout(() => {
+            setNpcState(a.id, NPC_STATE.CELEBRATE);
+            _setNpcDeskGlow(a.id, 'done');
+          }, 120 + i * 90);
+        });
+        setTimeout(() => {
+          AGENTS.forEach(a => setNpcState(a.id, NPC_STATE.IDLE));
+        }, 4500);
         MiniGames.stop();
         setTimeout(startIdleMusic, 1200); // resume calm music after cheer
       } else {
@@ -4019,6 +5077,17 @@ function connectWS() {
         document.getElementById('launch-btn').style.display = 'none';
         document.getElementById('download-btn').style.display = 'none';
         hideBuildActions();
+        // Whichever agent ended in error gets a brief flinch + red glow.
+        AGENTS.forEach((a) => {
+          const st = (data.agents || {})[a.id]
+            ? (data.agents[a.id].state)
+            : (agentStates[a.id]);
+          if (st === 'error') {
+            setNpcState(a.id, NPC_STATE.ERROR);
+            _setNpcDeskGlow(a.id, 'error');
+            setTimeout(() => setNpcState(a.id, NPC_STATE.IDLE), 2000);
+          }
+        });
         playBuildSfx('error');
         MiniGames.stop();
         setTimeout(startIdleMusic, 1000);
@@ -4508,11 +5577,96 @@ window.addEventListener('keydown', e => {
       showToast('Get closer to the ping-pong table first!', 'working');
     }
   }
+  // E — hammer the nail at the sawhorse station (Hammer Time minigame)
+  if (e.code === 'KeyE') {
+    if (MiniGames.nearHammer && MiniGames.nearHammer()) {
+      e.preventDefault();
+      MiniGames.hammerHit();
+    }
+  }
 });
+
+// ── Hammer-station prompt: subtle "Press E" hint when in range ───────────
+// Updates a couple times per second so we don't recompute distance every frame.
+setInterval(() => {
+  if (!MiniGames || !MiniGames.nearHammer) return;
+  const ip = document.getElementById('interact-prompt');
+  if (!ip) return;
+  // Don't fight other prompts that might already be on screen.
+  if (ip.classList.contains('visible') && ip.dataset.owner !== 'hammer') return;
+  if (MiniGames.nearHammer() && MiniGames.active) {
+    ip.dataset.owner = 'hammer';
+    ip.textContent = 'Press E to hammer';
+    ip.classList.add('visible');
+  } else if (ip.dataset.owner === 'hammer') {
+    ip.classList.remove('visible');
+    ip.dataset.owner = '';
+  }
+}, 350);
 
 // ── Wire up external modules ──────────────────────────
 
 // Initialise physics (builds obby platforms into scene)
+// ════════════════════════════════════════════════════
+//  CEL-SHADING OUTLINES
+// ════════════════════════════════════════════════════
+// Every static mesh in the scene gets a thin black edge overlay so the
+// chunky low-poly construction props read as a coherent illustrated style.
+// Skinned meshes (KayKit characters) are skipped because EdgesGeometry can't
+// follow bone deformation. Anything authored with userData.noOutline = true
+// is also skipped — useful for particles and helpers added later.
+const _OUTLINE_MAT = new THREE.LineBasicMaterial({ color: 0x111111, linewidth: 1 });
+
+function _meshShouldOutline(obj) {
+  if (!obj.isMesh) return false;
+  if (obj.isSkinnedMesh) return false;
+  if (obj.userData && obj.userData.noOutline) return false;
+  if (obj.userData && obj.userData.isOutline) return false;
+  if (!obj.geometry) return false;
+  // Nested into another outline-decorated mesh — already wrapped above us.
+  let parent = obj.parent;
+  while (parent) {
+    if (parent.userData && parent.userData.isOutline) return false;
+    parent = parent.parent;
+  }
+  // Skip very transparent meshes (particle sparks, glow planes etc).
+  const mat = obj.material;
+  if (mat) {
+    if (Array.isArray(mat) ? mat.every(m => m && m.transparent && m.opacity < 0.6)
+                           : (mat.transparent && mat.opacity < 0.6)) return false;
+  }
+  return true;
+}
+
+function _addOutlineToMesh(mesh, opts) {
+  if (mesh.userData._outlinedAlready) return;
+  mesh.userData._outlinedAlready = true;
+  let edges;
+  try {
+    const angle = (opts && typeof opts.angle === 'number') ? opts.angle : 22;
+    edges = new THREE.EdgesGeometry(mesh.geometry, angle);
+  } catch (err) {
+    return; // some geometries (e.g. raw BufferGeometry without index) can't edge
+  }
+  const lines = new THREE.LineSegments(edges, _OUTLINE_MAT);
+  lines.userData.isOutline = true;
+  // Render outline slightly offset toward the camera so it doesn't z-fight
+  // with the source surface on flat faces.
+  lines.renderOrder = (mesh.renderOrder || 0) + 1;
+  lines.frustumCulled = false;
+  mesh.add(lines);
+}
+
+function applyOutlinesToScene(root) {
+  (root || scene).traverse((obj) => {
+    if (_meshShouldOutline(obj)) _addOutlineToMesh(obj);
+  });
+}
+
+// Initial pass after every static prop has been added. Coin / target / spark
+// meshes get a follow-up pass below since they're spawned from minigames.js.
+applyOutlinesToScene();
+
 Physics.init(scene);
 
 // Initialise mini-games

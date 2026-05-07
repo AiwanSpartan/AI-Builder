@@ -26,7 +26,8 @@ from server_config import (
     MAX_REBUILD_ATTEMPTS,
 )
 from server_io import create_project_bundle
-from server_state import broadcast, build_state, log, set_agent
+from server_state import broadcast, build_state, log, record_event, set_agent
+from server_world_events import emit_world_event
 
 
 def _looks_like_web_app(code):
@@ -729,6 +730,31 @@ def _smoke_test_code(code, expected_routes=None, timeout_seconds=10, spec=None):
             errors.append(_tag(ERR_RUNTIME, f"GET / returned HTTP {e.code}"))
         except Exception as e:
             errors.append(_tag(ERR_RUNTIME, f"GET / failed: {e}"))
+
+        # Hard runtime gate: every generated app must expose GET /health → 200.
+        # This is a stable target that doesn't depend on the user's domain
+        # routes, so it cleanly distinguishes "server actually booted" from
+        # "server crashed on first request".
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(f"http://127.0.0.1:{port}/health", method="GET"),
+                timeout=5,
+            ) as resp:
+                resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                errors.append(_tag(
+                    ERR_ROUTE_MISSING,
+                    "GET /health returned 404 — required boot health route is missing",
+                ))
+            elif 500 <= e.code < 600:
+                errors.append(_tag(
+                    ERR_RUNTIME,
+                    f"GET /health returned HTTP {e.code} (server error during boot check)",
+                ))
+            # 4xx other than 404: route exists, treat as booted.
+        except Exception as e:
+            errors.append(_tag(ERR_RUNTIME, f"GET /health failed: {e}"))
 
         # Build a quick lookup so we can find a route's schema/tests by key.
         spec_by_route = {}
@@ -1467,6 +1493,11 @@ def build_pipeline(user_request):
         # prompt that lists every module; the rest of the pipeline (spec, smoke,
         # repair) is unchanged.
         set_agent("architect", "working", "Decomposing the request...", 8)
+        try:
+            broadcast("world_event", emit_world_event("ARCHITECT_START", {"message": "Decomposing the request"}))
+        except Exception:
+            # Non-fatal: world events best-effort
+            pass
         decomposition = decompose_request(user_request)
         modules = decomposition.get("modules", [])
         is_composite = decomposition.get("complexity") == "composite" and len(modules) > 1
@@ -1503,6 +1534,14 @@ ROUTES_SPEC
       "purpose": "serves the main HTML page",
       "body": null,
       "response": {"_": "html"}
+    },
+    {
+      "path": "/health",
+      "method": "GET",
+      "module": "main",
+      "purpose": "boot health check used by the runtime gate",
+      "body": null,
+      "response": {"status": "string"}
     },
     {
       "path": "/api/items",
@@ -1559,6 +1598,9 @@ Rules for ROUTES_SPEC:
   Skip `tests` ONLY if output is genuinely non-deterministic (timestamps, random IDs,
   list ordering).
 - Keep paths short and consistent. CRUD endpoints share a base path.
+- ALWAYS include a GET `/health` route that returns `{"status": "ok"}` with HTTP
+  200. The runtime gate uses this to detect a clean boot. Missing or crashing
+  /health = automatic build failure.
 
 After the JSON block, include a short prose plan with these sections:
 
@@ -1573,6 +1615,7 @@ Keep the prose tight. The ROUTES_SPEC JSON block is what other agents follow."""
         build_state["output"]["plan"] = plan
         set_agent("architect", "done", "Blueprint complete! 📋", 100)
         broadcast("output_update", {"type": "plan", "content": plan})
+        record_event("Bob finished planning the app structure")
 
         # Parse the structured spec; fall back to regex extraction if the model
         # failed to produce valid JSON.
@@ -1623,6 +1666,10 @@ Keep the prose tight. The ROUTES_SPEC JSON block is what other agents follow."""
 
             if rebuild_idx == 0:
                 set_agent("coder", "working", "Writing code...", 10)
+                try:
+                    broadcast("world_event", emit_world_event("CODE_START", {"message": "Coder starting implementation"}))
+                except Exception:
+                    pass
                 coder_prompt = (
                     f"Implement this plan fully:\n\n{plan}\n\n"
                     f"Original user request:\n{user_request}\n\n"
@@ -1690,6 +1737,14 @@ Engineering rules:
             build_state["output"]["code"] = code
             set_agent("coder", "done", "Code written! 💻", 100)
             broadcast("output_update", {"type": "code", "content": code})
+            record_event("Nia finished building the features")
+            try:
+                modules_list = build_state.get("modules") or [{"name": "main"}]
+                for m in modules_list:
+                    name = m.get("name") if isinstance(m, dict) else str(m)
+                    broadcast("world_event", emit_world_event("MODULE_COMPLETE", {"module": name, "message": "Module code generated"}))
+            except Exception:
+                pass
 
             debug_success = False
             for attempt in range(MAX_DEBUG_FIX_ATTEMPTS):
@@ -1778,10 +1833,23 @@ Rules:
                     if not first_smoke_error:
                         first_smoke_error = smoke_errors[0][:240]
                     log(f"[SMOKE] Backend smoke test failed: {smoke_summary}")
+                    record_event("Rex spotted something to fix and started repairing")
                     set_agent(
                         "debugger", "working",
                         f"Fixing wiring: {smoke_errors[0][:60]}", 97,
                     )
+                    try:
+                        # Attribute the first smoke error to a module when possible
+                        err_tag, err_body = _classify_smoke_error(smoke_errors[0])
+                        meth, path = _extract_route_from_message(smoke_errors[0])
+                        module_name = _module_for_route(spec, meth, path) if meth and path and spec else (build_state.get("modules") or [{"name": "main"}])[0].get("name")
+                        broadcast("world_event", emit_world_event("DEBUG_ERROR", {
+                            "module": module_name,
+                            "error_type": err_tag,
+                            "message": smoke_errors[0],
+                        }))
+                    except Exception:
+                        pass
                     # Build a TYPE-AWARE repair prompt. Group errors by tag so
                     # we can give the model focused guidance per failure class
                     # instead of dumping everything as one mixed list.
@@ -1810,19 +1878,45 @@ Rules:
                             # for an issue that's already gone.
                             first_smoke_error = ""
                             log("[SMOKE] Repair fixed the wiring — smoke test passing.")
+                            record_event("Rex fixed the issue — checks are passing again")
                             set_agent("debugger", "done", "Routes verified ✓", 100)
                         else:
-                            # Keep original; smoke failed but the app at least compiled.
+                            # Smoke still fails after a targeted repair attempt.
+                            # Treat this as a real build failure: feed it back
+                            # into the rebuild loop instead of pretending the
+                            # debugger said "all clear" on a broken app.
+                            unresolved = "; ".join(retry_errors[:3])
                             log(
-                                "[SMOKE] Repair didn't fix smoke. Sticking with "
-                                f"compile-clean version. Remaining: {'; '.join(retry_errors[:2])}"
+                                "[SMOKE] Repair did not fix smoke after retry. "
+                                f"Forcing rebuild. Remaining: {unresolved}"
                             )
-                            set_agent("debugger", "done", "No bugs found! All clear 🟢", 100)
+                            last_error = (
+                                f"Runtime checks still failing after repair attempt:\n{unresolved}"
+                            )
+                            debug_success = False
+                            set_agent(
+                                "debugger", "error",
+                                f"Runtime checks failing: {retry_errors[0][:60]}",
+                                0,
+                            )
                     else:
+                        # Repair LLM call itself failed — same outcome: smoke
+                        # never recovered, so this iteration didn't actually
+                        # produce a runnable app.
+                        unresolved = "; ".join(smoke_errors[:3])
                         log(f"[SMOKE] Repair attempt failed: {clamp_text(repair_error, 200)}")
-                        set_agent("debugger", "done", "No bugs found! All clear 🟢", 100)
+                        last_error = (
+                            f"Runtime checks failing and repair could not run:\n{unresolved}"
+                        )
+                        debug_success = False
+                        set_agent(
+                            "debugger", "error",
+                            f"Runtime checks failing: {smoke_errors[0][:60]}",
+                            0,
+                        )
                 else:
                     set_agent("debugger", "done", "Routes verified ✓", 100)
+                    record_event("Rex verified the buttons all work")
 
             if debug_success:
                 feature_gap = _detect_request_feature_gap(user_request, code)
@@ -1887,15 +1981,35 @@ Rules:
                 log("[REBUILD] Debugger exhausted attempts. Retrying full rebuild with failure context.")
                 continue
 
+            # Final failure path: build truly didn't pass runtime checks.
+            # Demote the ARCHITECT and CODER from DONE → ERROR so the UI doesn't
+            # claim success on agents whose output didn't actually run. The
+            # plan was structurally correct but the code couldn't be made to
+            # work, so both agents share responsibility for the outcome.
+            for role in ("architect", "coder"):
+                role_state = (build_state.get("agents", {}).get(role) or {}).get("state")
+                if role_state == "done":
+                    set_agent(
+                        role,
+                        "error",
+                        "Build did not pass runtime checks.",
+                        0,
+                    )
+
+            # Build a concrete failure summary from the last error captured by
+            # the smoke test or the debugger so the user sees WHAT broke, not
+            # just "not runnable". Pull the highest-priority smoke error if
+            # available, otherwise use the last debugger error.
+            failure_detail = clamp_text(last_error or "no specific error captured", 220)
             set_agent(
                 "debugger",
                 "error",
-                f"Could not produce runnable code after {total_attempts} rebuild rounds.",
+                f"Build failed runtime checks: {failure_detail[:80]}",
                 0,
             )
             raise RuntimeError(
-                "Generated app is not runnable after rebuild retries. "
-                "Review panel contains identified mistakes."
+                "Build did not pass runtime checks after "
+                f"{total_attempts} attempt(s). Last issue: {failure_detail}"
             )
 
         tests = ""
@@ -1918,6 +2032,7 @@ Rules:
             build_state["output"]["tests"] = tests
             set_agent("tester", "done", "All tests written! 🧪", 100)
             broadcast("output_update", {"type": "tests", "content": tests})
+            record_event("Zoe wrote the tests for the new app")
         except Exception as test_exc:
             test_msg = clamp_text(str(test_exc), 220)
             tests = (
@@ -1948,6 +2063,7 @@ Rules:
             build_state["output"]["review"] = review
             set_agent("reviewer", "done", "Review complete! 🔍", 100)
             broadcast("output_update", {"type": "review", "content": review})
+            record_event("Max finished a quality review of the work")
         except Exception as review_exc:
             review_msg = clamp_text(str(review_exc), 260)
             review = (
@@ -2016,6 +2132,7 @@ ends with app.run(host=\"0.0.0.0\", port=int(os.environ.get(\"PORT\", \"5600\"))
         broadcast("output_update", {"type": "code", "content": bundle["code_preview"]})
 
         build_succeeded = True
+        record_event("The app is finished and ready to test")
 
         log(f"[SAVED] project folder: {bundle['project_dir']}")
         log(f"[SAVED] entrypoint: {bundle['entrypoint']}")
@@ -2057,3 +2174,13 @@ ends with app.run(host=\"0.0.0.0\", port=int(os.environ.get(\"PORT\", \"5600\"))
             "user_request": user_request,
             "modules": build_state.get("modules", []),
         })
+        try:
+            broadcast("world_event", emit_world_event("BUILD_COMPLETE", {
+                "success": build_succeeded,
+                "recommendations": build_state.get("recommendations", []),
+                "first_error": build_state.get("first_error", ""),
+                "user_request": user_request,
+                "modules": build_state.get("modules", []),
+            }))
+        except Exception:
+            pass

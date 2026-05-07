@@ -29,13 +29,14 @@ from server_io import (
     refresh_project_zip,
     save_repaired_project_main,
 )
-from server_personas import NPC_PERSONAS
+from server_personas import NPC_PERSONAS, SPECTATOR_LAYER_RULES
 from server_pipeline import build_pipeline, classify_request_scope
 from server_state import (
     app,
     broadcast,
     build_state,
     clients,
+    get_recent_events,
     log,
     reset_build_state_for_new_request,
     sock,
@@ -600,51 +601,21 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return """<!doctype html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"utf-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-    <title>Recovered App</title>
-    <style>
-        body {{
-            margin: 0;
-            font-family: \"Segoe UI\", Tahoma, sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-        }}
-        .wrap {{
-            max-width: 760px;
-            margin: 36px auto;
-            padding: 22px;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            background: #111827;
-        }}
-        h1 {{ margin-top: 0; }}
-        p {{ line-height: 1.55; color: #cbd5e1; }}
-        code {{ color: #67e8f9; }}
-        pre {{
-            background: #020617;
-            color: #cbd5e1;
-            border: 1px solid #1e293b;
-            padding: 12px;
-            border-radius: 8px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-        }}
-    </style>
-</head>
-<body>
-    <main class=\"wrap\">
-        <h1>Recovered Test App</h1>
-        <p>This generated build could not be launched directly, so AI Builder created a runnable rescue app.</p>
-        <p>Original request: <code>{safe_request}</code></p>
-        <p>Rebuild to get a full custom app. You can also edit <code>main.py</code> in this build folder.</p>
-        <pre>{safe_reason}</pre>
-    </main>
-</body>
-</html>"""
+    """Serve the 3D AI office frontend."""
+    # Prefer serving the moved web/ office.html when present to support repo reorganization.
+    web_office = os.path.join(BASE_DIR, 'web', 'office.html')
+    if os.path.isfile(web_office):
+        response = make_response(send_file(web_office))
+    else:
+        # Fallback to root office.html if it exists
+        fallback_office = os.path.join(BASE_DIR, 'office.html')
+        if os.path.isfile(fallback_office):
+            response = make_response(send_file(fallback_office))
+        else:
+            return "<h1>404</h1><p>office.html not found</p>", 404
+    
+    response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return response
 
 
 if __name__ == "__main__":
@@ -1055,6 +1026,102 @@ def _fetch_web_search_context(question):
     )
 
 
+# Translation table — internal pipeline phase names → kid-friendly descriptions.
+# NPCs receive ONLY the human-language version; the raw phase names are forbidden
+# in their replies via SPECTATOR_LAYER_RULES.
+_PHASE_HUMAN_LANGUAGE = {
+    "decomposing": "figuring out what parts the app needs",
+    "architect":   "planning how the app will work",
+    "coder":       "building the actual features",
+    "debugger":    "checking for bugs and fixing little issues",
+    "tester":      "writing tests to make sure it works",
+    "reviewer":    "reading the work over for polish",
+    "polish":      "making the final improvements",
+    "smoke":       "trying out the buttons to make sure they all work",
+    "building":    "working on your app right now",
+    "idle":        "waiting for the next request",
+}
+
+
+def _current_human_phase():
+    """Pick the active build phase from build_state and translate it to
+    human language. Returns a sentence-ready string for use in NPC prompts."""
+    agents = build_state.get("agents") or {}
+    # Order roughly matches pipeline order so the earliest active phase wins.
+    for role in ("architect", "coder", "debugger", "tester", "reviewer"):
+        info = agents.get(role) or {}
+        if info.get("state") == "working":
+            return _PHASE_HUMAN_LANGUAGE.get(role, "working on your app right now")
+    if (build_state.get("status") or "").lower() == "building":
+        return _PHASE_HUMAN_LANGUAGE["building"]
+    return _PHASE_HUMAN_LANGUAGE["idle"]
+
+
+def _humanize_first_error(err_text):
+    """Translate a tagged smoke error into spectator-friendly language so the
+    NPC can say something like 'a button doesn't lead anywhere yet' instead
+    of '[ROUTE_MISSING] POST /api/items returned 404'."""
+    if not err_text:
+        return ""
+    text = str(err_text)
+    if "[ROUTE_MISSING]" in text:
+        return "one of the buttons doesn't lead anywhere yet"
+    if "[METHOD_MISMATCH]" in text:
+        return "a button is wired the wrong way"
+    if "[SCHEMA_INVALID]" in text:
+        return "the data shape doesn't match what was promised"
+    if "[LOGIC_ERROR]" in text:
+        return "the answer comes out wrong for a known input"
+    if "[PERSISTENCE_FAIL]" in text:
+        return "the things you save aren't sticking"
+    if "[RUNTIME]" in text:
+        return "something crashed during a quick check"
+    return ""
+
+
+def _build_npc_state_block():
+    """Compose a small, kid-friendly status block the NPCs can reference.
+    NEVER leak internal phase names, route paths, JSON, or error tags — those
+    are filtered behind _humanize_* helpers and the SPECTATOR_LAYER_RULES
+    system prompt enforces it on the model side too.
+
+    Includes:
+      - current activity phase (translated)
+      - module count + names (composite builds only)
+      - a humanized first-error description (if a smoke check caught something)
+      - last 3 build events from the recent-events memory
+      - whether the last build is sitting ready
+    """
+    lines = [f"Current activity: {_current_human_phase()}."]
+
+    modules = build_state.get("modules") or []
+    module_names = [m.get("name") for m in modules if isinstance(m, dict) and m.get("name")]
+    if len(module_names) > 1:
+        lines.append(
+            f"This app has {len(module_names)} parts: "
+            f"{', '.join(module_names)}."
+        )
+
+    first_error = build_state.get("first_error") or ""
+    err_summary = _humanize_first_error(first_error)
+    if err_summary:
+        lines.append(f"Last issue noticed: {err_summary}.")
+
+    # Recent build events — short, narrated history.
+    events = get_recent_events(limit=3)
+    if events:
+        lines.append("Recently:")
+        for ev in events:
+            lines.append(f"  - {ev.get('text', '')}")
+
+    status = (build_state.get("status") or "").lower()
+    has_code = bool((build_state.get("output") or {}).get("code"))
+    if status == "idle" and has_code:
+        lines.append("The most recent app is ready to test.")
+
+    return "\n".join(lines)
+
+
 def _build_npc_user_prompt(question, app_context="", web_context=""):
     sections = [
         "Style rules:\n"
@@ -1064,6 +1131,16 @@ def _build_npc_user_prompt(question, app_context="", web_context=""):
         "- Keep it to 1-2 short sentences.",
         f"User question: {question}",
     ]
+
+    # Always inject the human-language status block — this is the ONLY view
+    # NPCs get of what's happening inside the build pipeline. They cannot see
+    # code, specs, errors, or any internal phase name.
+    state_block = _build_npc_state_block()
+    if state_block:
+        sections.append(
+            "Live build status (describe in your own words, never quote internal terms):\n"
+            f"{state_block}"
+        )
 
     if app_context:
         sections.append(
@@ -1216,21 +1293,67 @@ def _shutdown_runtime_process_on_exit():
 @app.route('/office')
 @app.route('/office.html')
 def index():
-    response = make_response(send_file(os.path.join(BASE_DIR, 'office.html')))
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    try:
+        web_office = os.path.join(BASE_DIR, 'web', 'office.html')
+        if os.path.isfile(web_office):
+            try:
+                response = make_response(send_file(web_office, mimetype='text/html'))
+            except Exception as inner_exc:
+                log(f"[STATIC] Failed to send_file({web_office}): {inner_exc}")
+                raise
+        else:
+            fallback_office = os.path.join(BASE_DIR, 'office.html')
+            if os.path.isfile(fallback_office):
+                try:
+                    response = make_response(send_file(fallback_office, mimetype='text/html'))
+                except Exception as inner_exc:
+                    log(f"[STATIC] Failed to send_file({fallback_office}): {inner_exc}")
+                    raise
+            else:
+                return (f"office.html not found in web/ or root", 404)
+        
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    except Exception as exc:
+        import traceback
+        error_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        try:
+            log(f"[STATIC] Failed to serve office.html: {error_msg}")
+        except Exception:
+            print(f"[STATIC] Failed to serve office.html: {error_msg}")
+        return (f"500 Error: {error_msg}", 500)
 
 
 @app.route('/physics.js')
 def serve_physics_js():
-    return send_file(os.path.join(BASE_DIR, 'physics.js'), mimetype='application/javascript')
+    try:
+        web_physics = os.path.join(BASE_DIR, 'web', 'js', 'physics.js')
+        if os.path.isfile(web_physics):
+            return send_file(web_physics, mimetype='application/javascript')
+        return send_file(os.path.join(BASE_DIR, 'physics.js'), mimetype='application/javascript')
+    except Exception as exc:
+        try:
+            log(f"[STATIC] Failed to serve physics.js: {exc}")
+        except Exception:
+            print(f"[STATIC] Failed to serve physics.js: {exc}")
+        return (f"Internal Server Error while serving physics.js: {exc}", 500)
 
 
 @app.route('/minigames.js')
 def serve_minigames_js():
-    return send_file(os.path.join(BASE_DIR, 'minigames.js'), mimetype='application/javascript')
+    try:
+        web_minigames = os.path.join(BASE_DIR, 'web', 'js', 'minigames.js')
+        if os.path.isfile(web_minigames):
+            return send_file(web_minigames, mimetype='application/javascript')
+        return send_file(os.path.join(BASE_DIR, 'minigames.js'), mimetype='application/javascript')
+    except Exception as exc:
+        try:
+            log(f"[STATIC] Failed to serve minigames.js: {exc}")
+        except Exception:
+            print(f"[STATIC] Failed to serve minigames.js: {exc}")
+        return (f"Internal Server Error while serving minigames.js: {exc}", 500)
 
 
 _ASSET_MIMETYPES = {
@@ -2022,7 +2145,8 @@ Rules:
 - Never say "the user" or mention context blocks.
 - If uncertain, briefly say "I might be wrong.".
 - Do not use markdown tables or code fences.
-"""
+
+""" + SPECTATOR_LAYER_RULES
 
     web_context = _fetch_web_search_context(question)
     user_prompt = _build_npc_user_prompt(
@@ -2069,7 +2193,8 @@ def npc_chat_stream():
                 "You are Orbit, a floating orb guide in an AI Office app builder. "
                 "Keep answers very short: 1-2 small sentences. Use easy words. "
                 "Speak in first person with I/me/my. Start with 'Orbit says:'. "
-                "Never say 'the user'. If uncertain, say 'I might be wrong.'."
+                "Never say 'the user'. If uncertain, say 'I might be wrong.'.\n\n"
+                + SPECTATOR_LAYER_RULES
             ),
             'signature': 'Orbit says:',
             'name': 'Orbit',

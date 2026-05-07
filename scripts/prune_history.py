@@ -36,7 +36,6 @@ def prune(max_entries: int, max_age_days: int):
         created = entry.get('created_at', 0)
         items.append((fp, created, entry))
 
-    # sort newest first
     items.sort(key=lambda t: t[1], reverse=True)
 
     cutoff = time.time() - max_age_days * 24 * 3600

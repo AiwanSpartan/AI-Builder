@@ -22,7 +22,6 @@ def main():
     schema = parse_architect(architect_text)
     print('Parsed schema:', schema)
 
-    # Validate routes
     routes_total = len(schema)
     routes_passed = 0
     for r in schema:
@@ -32,7 +31,6 @@ def main():
         if res.get('ok'):
             routes_passed += 1
 
-    # Run scenario: add item then check persistence
     scenario = [
         {'type': 'request', 'method': 'POST', 'path': '/items', 'json': {'name': 'test-item'}},
         {'type': 'request', 'method': 'GET', 'path': '/items', 'expect_json': True, 'required_keys': ['id', 'name']}
@@ -44,7 +42,6 @@ def main():
     scenarios_total = 1
     scenarios_passed = 1 if scenario_res.get('ok') else 0
 
-    # response validity counts (quick heuristic)
     response_valid_count = routes_passed
     response_total = routes_total
 

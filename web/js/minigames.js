@@ -6,12 +6,14 @@
   let _scene, _player, _renderer, _physics, _keys;
   let _playTone, _showToast;
 
-  // ── Basketball geometry (shared) ─────────────────────
-  const _bbBallMat  = new THREE.MeshLambertMaterial({ color: 0xf97316 });
-  const _bbBallGeom = new THREE.SphereGeometry(0.18, 8, 6);
+  // ── Wrecking-ball geometry (shared, was basketball) ──
+  // Dark iron ball; mat is reused for in-flight projectile clones.
+  const _bbBallMat  = new THREE.MeshLambertMaterial({ color: 0x2a2a30 });
+  const _bbBallGeom = new THREE.SphereGeometry(0.22, 10, 8);
 
-  // ── Target Dash geometry ─────────────────────────────
-  const _tdGeom = new THREE.CylinderGeometry(0.45, 0.45, 0.12, 16);
+  // ── Cone Slalom marker (was Target Dash disc) ────────
+  // Cone-shape so it reads as a traffic cone, not a hockey puck.
+  const _tdGeom = new THREE.ConeGeometry(0.32, 0.7, 12);
 
   // ── Hoop world-position ──────────────────────────────
   const HOOP_POS         = new THREE.Vector3(-14, 3.8, -10);
@@ -20,6 +22,14 @@
   // ── Ping-pong table world-position ───────────────────
   const PP_POS   = new THREE.Vector3(10, 0, 10);
   const PP_RANGE = 5;
+
+  // ── Hammer Time station world-position ──────────────
+  // Anchored at the front-of-bench sawhorse the office.html scene already
+  // ships at (-8, 0, 14). The "nail" we hit sits on top of the plank at
+  // y ≈ 1.1, slightly above the sawhorse spine.
+  const HAMMER_POS    = new THREE.Vector3(-8, 0, 14);
+  const HAMMER_RANGE  = 3.0;
+  const HAMMER_COMBO_WINDOW_MS = 900; // hits within this window stack the combo
 
   // ── Coin spawn spots ─────────────────────────────────
   const COIN_SPOTS = [
@@ -90,17 +100,24 @@
     _playTone = ctx.playTone;
     _showToast = ctx.showToast;
 
-    MG._coinMat  = new THREE.MeshLambertMaterial({ color: 0xfbbf24, emissive: 0xf59e0b, emissiveIntensity: 0.5 });
-    MG._coinGeom = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12);
-    MG._tdMat    = new THREE.MeshLambertMaterial({ color: 0x22c55e, emissive: 0x16a34a });
+    // ── BOLT HUNT (replaces coin pickups) ──────────────────
+    // Hex steel bolts with a yellow head — collect them like coins.
+    MG._coinMat  = new THREE.MeshLambertMaterial({ color: 0xb6c0c8, emissive: 0x6b7480, emissiveIntensity: 0.4 });
+    MG._coinGeom = new THREE.CylinderGeometry(0.20, 0.20, 0.10, 6); // hex prism = bolt head
+    // ── CONE SLALOM (replaces target dash) ─────────────────
+    // Run through traffic cones; lit cones (yellow) score double.
+    MG._tdMat    = new THREE.MeshLambertMaterial({ color: 0xea5b1c, emissive: 0x8a3210 });
     MG._tdMatLit = new THREE.MeshLambertMaterial({ color: 0xfbbf24, emissive: 0xf59e0b });
     MG._bbPowerEl = document.getElementById('bb-power-overlay');
 
     _buildHoop();
     _buildPingPongTable();
 
-    // Held basketball — always in scene at player's hand
-    MG._heldBall = new THREE.Mesh(_bbBallGeom, new THREE.MeshLambertMaterial({ color: 0xf97316 }));
+    // ── WRECKING BALL (replaces basketball) ────────────────
+    // Heavy dark iron ball + chain held next to the player; toss it to chip
+    // bricks off the target wall.
+    MG._heldBall = new THREE.Mesh(_bbBallGeom,
+      new THREE.MeshLambertMaterial({ color: 0x2a2a30, emissive: 0x111114, emissiveIntensity: 0.2 }));
     MG._heldBall.visible = true;
     _scene.add(MG._heldBall);
 
@@ -120,7 +137,7 @@
     document.getElementById('minigame-hud').classList.add('visible');
     _spawnCoins(12);
     _spawnTargets();
-    _showToast('Games unlocked! Collect coins, drag to shoot hoops, dash to targets!', 'working');
+    _showToast('Site games on! Collect bolts, drag the wrecking ball, run the cone slalom — and press E at the sawhorse to hammer.', 'working');
   };
 
   MG.stop = function () {
@@ -152,6 +169,7 @@
     _tickBall(dt);
     _tickTargets(t);
     _tickPingPong(dt);
+    _tickHammerSparks(dt);
   };
 
   /** True when player is close enough to the hoop to shoot. */
@@ -160,6 +178,127 @@
     const dz = _player.group.position.z - HOOP_POS.z;
     return Math.sqrt(dx * dx + dz * dz) < HOOP_SHOOT_RANGE;
   };
+
+  // ── Hammer Time (proximity + key-press) ──────────────
+  // Player walks up to the sawhorse, taps E (or whatever key the office binds)
+  // to hammer a nail. Each hit awards points; rapid hits within the combo
+  // window multiply the reward. The nail mesh visually sinks per hit and
+  // resets after a few seconds of inactivity.
+  MG._hammerHits     = 0;
+  MG._hammerCombo    = 0;
+  MG._hammerLastHit  = 0;
+  MG._hammerNail     = null;
+  MG._hammerSparks   = []; // active spark particles
+  MG._hammerNailY0   = 1.18; // nail starting Y above sawhorse plank
+  MG._hammerNailMinY = 1.05; // never sink below the plank surface
+
+  function _ensureHammerStation() {
+    if (MG._hammerNail) return;
+    // Nail: thin steel cylinder sitting on top of the plank.
+    const nailMat  = new THREE.MeshStandardMaterial({ color: 0xc0c4cc, roughness: 0.4, metalness: 0.85 });
+    const nail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.18, 8), nailMat);
+    nail.position.set(HAMMER_POS.x, MG._hammerNailY0, HAMMER_POS.z);
+    nail.castShadow = true;
+    _scene.add(nail);
+    // Nail head: a slightly wider disc on top.
+    const head = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.025, 10),
+      nailMat,
+    );
+    head.position.set(HAMMER_POS.x, MG._hammerNailY0 + 0.10, HAMMER_POS.z);
+    _scene.add(head);
+    MG._hammerNail = nail;
+    MG._hammerNailHead = head;
+  }
+
+  /** True when player is close enough to the sawhorse to hammer. */
+  MG.nearHammer = function () {
+    const dx = _player.group.position.x - HAMMER_POS.x;
+    const dz = _player.group.position.z - HAMMER_POS.z;
+    return Math.sqrt(dx * dx + dz * dz) < HAMMER_RANGE;
+  };
+
+  /** Called from the office's key handler when player taps the hammer key
+   *  while in range. Returns true if a hit was registered. */
+  MG.hammerHit = function () {
+    if (!MG.active) return false;
+    if (!MG.nearHammer()) return false;
+    _ensureHammerStation();
+
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now - MG._hammerLastHit < 80) return false; // hard rate limit (anti-spam)
+    const inCombo = (now - MG._hammerLastHit) < HAMMER_COMBO_WINDOW_MS;
+    MG._hammerLastHit = now;
+    MG._hammerHits   += 1;
+    MG._hammerCombo   = inCombo ? Math.min(MG._hammerCombo + 1, 12) : 1;
+    const points = 1 + Math.floor(MG._hammerCombo / 3); // 1, 1, 2, 2, 2, 3, 3, 3, 4...
+    MG.score += points;
+
+    // Sink the nail a bit per hit; reset after it bottoms out.
+    if (MG._hammerNail) {
+      MG._hammerNail.position.y = Math.max(MG._hammerNailMinY, MG._hammerNail.position.y - 0.012);
+      if (MG._hammerNailHead) {
+        MG._hammerNailHead.position.y = MG._hammerNail.position.y + 0.10;
+      }
+      // Once fully driven in, pop a fresh nail.
+      if (MG._hammerNail.position.y <= MG._hammerNailMinY + 0.001) {
+        setTimeout(() => {
+          if (MG._hammerNail) MG._hammerNail.position.y = MG._hammerNailY0;
+          if (MG._hammerNailHead) MG._hammerNailHead.position.y = MG._hammerNailY0 + 0.10;
+        }, 350);
+      }
+    }
+
+    // Spark particles (a handful of small yellow cubes that fade outward).
+    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xfff1a8, transparent: true });
+    for (let i = 0; i < 5; i++) {
+      const s = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.04), sparkMat);
+      s.position.set(
+        HAMMER_POS.x + (Math.random() - 0.5) * 0.1,
+        (MG._hammerNail ? MG._hammerNail.position.y + 0.1 : 1.2),
+        HAMMER_POS.z + (Math.random() - 0.5) * 0.1,
+      );
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1.6 + Math.random() * 1.4;
+      _scene.add(s);
+      MG._hammerSparks.push({
+        mesh: s,
+        vx: Math.cos(angle) * speed,
+        vy: 1.5 + Math.random() * 1.2,
+        vz: Math.sin(angle) * speed,
+        life: 0.45,
+      });
+    }
+
+    if (_playTone) _playTone(640 + Math.random() * 80, 0.04, { type: 'square', volume: 0.07, endFreq: 280 });
+    if (_showToast && MG._hammerCombo >= 4 && MG._hammerCombo % 4 === 0) {
+      _showToast(`x${MG._hammerCombo} combo! +${points}`, 'working');
+    }
+    return true;
+  };
+
+  function _tickHammerSparks(dt) {
+    for (let i = MG._hammerSparks.length - 1; i >= 0; i--) {
+      const s = MG._hammerSparks[i];
+      s.life -= dt;
+      if (s.life <= 0) {
+        _scene.remove(s.mesh);
+        MG._hammerSparks.splice(i, 1);
+        continue;
+      }
+      // Simple gravity + drag
+      s.vy -= 9.0 * dt;
+      s.mesh.position.x += s.vx * dt;
+      s.mesh.position.y += s.vy * dt;
+      s.mesh.position.z += s.vz * dt;
+      s.mesh.material.opacity = Math.max(0, s.life / 0.45);
+    }
+    // Decay the combo if no hit lands within the window.
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (MG._hammerCombo > 0 && now - MG._hammerLastHit > HAMMER_COMBO_WINDOW_MS) {
+      MG._hammerCombo = 0;
+    }
+  }
 
   // ────────────────────────────────────────────────────
   //  Coin Dash

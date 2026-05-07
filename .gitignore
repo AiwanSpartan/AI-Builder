@@ -1,3 +1,12 @@
 # Ignore generated build output folders
 Build/
 Builds/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+
+# Generated validation artifacts
+test_reports/
+repair_prompts/
+repair_history.json
